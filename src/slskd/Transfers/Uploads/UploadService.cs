@@ -961,9 +961,12 @@ namespace slskd.Transfers.Uploads
 
                 var cutoffDateTime = DateTime.UtcNow.AddMinutes(-age);
 
+                // compared to a variable rather than negated so SQLite can use IDX_Transfers_DirectionRemovedEndedAt (see TransferPaging)
+                var removed = false;
+
                 var pruned = context.Transfers
                     .Where(t => t.Direction == TransferDirection.Upload)
-                    .Where(t => !t.Removed)
+                    .Where(t => t.Removed == removed)
                     .Where(t => t.EndedAt.HasValue && t.EndedAt.Value < cutoffDateTime)
                     .Where(t => statesSet.Contains((int)t.State))
                     .ExecuteUpdate(r => r.SetProperty(c => c.Removed, true));

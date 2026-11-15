@@ -46,6 +46,8 @@ using Soulseek;
 /// </summary>
 public class ReportsService
 {
+    private const string DirectoryNameFunction = "slskd_directory_name";
+
     /// <summary>
     ///     Initializes a new instance of the <see cref="ReportsService"/> class.
     /// </summary>
@@ -87,23 +89,25 @@ public class ReportsService
             { TransferDirection.Upload, new Dictionary<TransferStates, TransferSummary>() },
         };
 
+        // grouped by State (not StateDescription) and limited to columns in IDX_Transfers_Reports so that SQLite
+        // answers this from the covering index; StateDescription is always State.ToString(), so the groups are the same
         var sql = @$"
             SELECT
                 Direction,
-                StateDescription,
+                State AS StateDescription,
                 SUM(Size) AS TotalBytes,
                 COUNT(*) AS Count,
                 COUNT(DISTINCT Username) AS DistinctUsers,
                 AVG(AverageSpeed) AS AverageSpeed,
-                AVG(strftime('%s', StartedAt) - strftime('%s', EnqueuedAt)) AS AverageWait,
-                AVG(strftime('%s', EndedAt) - strftime('%s', StartedAt)) AS AverageDuration
+                AVG(unixepoch(StartedAt) - unixepoch(EnqueuedAt)) AS AverageWait,
+                AVG(unixepoch(EndedAt) - unixepoch(StartedAt)) AS AverageDuration
             FROM Transfers
             WHERE EndedAt IS NOT NULL
                 AND EndedAt BETWEEN @Start AND @End
                 AND State IN ({string.Join(", ", TransferStateCategories.Completed.Select(s => (int)s))})
                 {(direction is not null ? "AND Direction = @Direction" : string.Empty)}
                 {(username is not null ? "AND Username = @Username" : string.Empty)}
-            GROUP BY Direction, StateDescription
+            GROUP BY Direction, State
         ";
 
         using var connection = new SqliteConnection(ConnectionStrings[Database.Transfers]);
@@ -222,25 +226,26 @@ public class ReportsService
             currentInterval = currentInterval.Add(effectiveInterval);
         }
 
+        // see GetTransferSummary for why this groups by State and uses only indexed columns
         var sql = @$"
             SELECT
-                datetime(strftime('%s', EndedAt) / CAST(@Interval AS INTEGER) * CAST(@Interval AS INTEGER), 'unixepoch') AS Interval,
+                datetime(unixepoch(EndedAt) / CAST(@Interval AS INTEGER) * CAST(@Interval AS INTEGER), 'unixepoch') AS Interval,
                 Direction,
-                StateDescription,
+                State AS StateDescription,
                 SUM(Size) AS TotalBytes,
                 COUNT(*) AS Count,
                 COUNT(DISTINCT Username) AS DistinctUsers,
-                COALESCE(CAST(SUM(Size) AS REAL) / NULLIF(SUM(strftime('%s', EndedAt) - strftime('%s', StartedAt)), 0), 0.0) AS AverageSpeed,
-                COALESCE(AVG(strftime('%s', StartedAt) - strftime('%s', EnqueuedAt)), 0.0) AS AverageWait,
-                COALESCE(AVG(strftime('%s', EndedAt) - strftime('%s', StartedAt)), 0.0) AS AverageDuration
+                COALESCE(CAST(SUM(Size) AS REAL) / NULLIF(SUM(unixepoch(EndedAt) - unixepoch(StartedAt)), 0), 0.0) AS AverageSpeed,
+                COALESCE(AVG(unixepoch(StartedAt) - unixepoch(EnqueuedAt)), 0.0) AS AverageWait,
+                COALESCE(AVG(unixepoch(EndedAt) - unixepoch(StartedAt)), 0.0) AS AverageDuration
             FROM Transfers
             WHERE EndedAt IS NOT NULL
                 AND EndedAt BETWEEN @Start AND @End
                 AND State IN ({string.Join(", ", TransferStateCategories.Completed.Select(s => (int)s))})
                 {(direction is not null ? "AND Direction = @Direction" : string.Empty)}
                 {(username is not null ? "AND Username = @Username" : string.Empty)}
-            GROUP BY Interval, Direction, StateDescription
-            ORDER BY Interval, Direction, StateDescription;
+            GROUP BY Interval, Direction, State
+            ORDER BY Interval, Direction, State;
         ";
 
         using var connection = new SqliteConnection(ConnectionStrings[Database.Transfers]);
@@ -318,6 +323,7 @@ public class ReportsService
             throw new ArgumentOutOfRangeException("Limit must be greater than zero");
         }
 
+        // State is fixed, so grouping by it (or StateDescription) is redundant; omitting it keeps the query on IDX_Transfers_Reports
         var sql = @$"
             SELECT
                 Username,
@@ -326,14 +332,14 @@ public class ReportsService
                 SUM(Size) AS TotalBytes,
                 COUNT(*) AS Count,
                 AVG(AverageSpeed) AS AverageSpeed,
-                AVG(strftime('%s', StartedAt) - strftime('%s', EnqueuedAt)) AS AverageWait,
-                AVG(strftime('%s', EndedAt) - strftime('%s', StartedAt)) AS AverageDuration
+                AVG(unixepoch(StartedAt) - unixepoch(EnqueuedAt)) AS AverageWait,
+                AVG(unixepoch(EndedAt) - unixepoch(StartedAt)) AS AverageDuration
             FROM Transfers
             WHERE Direction = @Direction
                 AND State = 48
                 AND EndedAt IS NOT NULL
                 AND EndedAt BETWEEN @Start AND @End
-            GROUP BY Username, Direction, StateDescription
+            GROUP BY Username, Direction
             ORDER BY {sortBy} {sortOrder}, Username DESC
             LIMIT @Limit
             OFFSET @Offset
@@ -560,9 +566,7 @@ public class ReportsService
         var sql = @$"
             WITH directories AS (
                 SELECT
-                    RTRIM(
-                        RTRIM(filename, REPLACE(REPLACE(filename, '/', ''), '\', '')), '/\'
-                    ) AS Directory,
+                    {DirectoryNameFunction}(Filename) AS Directory,
                     Username
                 FROM transfers 
                 WHERE Direction = 'Upload'
@@ -581,6 +585,10 @@ public class ReportsService
 
         using var connection = new SqliteConnection(ConnectionStrings[Database.Transfers]);
 
+        // SQLite has no 'last index of', and the pure SQL equivalent (RTRIM with the filename's own characters as
+        // the trim set) is quadratic in the filename length; it took seconds over a few hundred thousand uploads
+        connection.CreateFunction(DirectoryNameFunction, (string filename) => DirectoryName(filename), isDeterministic: true);
+
         var param = new
         {
             Start = start,
@@ -592,6 +600,22 @@ public class ReportsService
 
         var results = connection.Query<TransferDirectorySummary>(sql, param);
         return results.ToList();
+    }
+
+    /// <summary>
+    ///     Returns everything before the last path separator (either '/' or '\') with trailing separators removed,
+    ///     or an empty string if there is no separator; the same result as the RTRIM expression this replaced.
+    /// </summary>
+    private static string DirectoryName(string filename)
+    {
+        if (filename is null)
+        {
+            return null;
+        }
+
+        var index = filename.AsSpan().LastIndexOfAny('/', '\\');
+
+        return index < 0 ? string.Empty : filename.AsSpan(0, index).TrimEnd(['/', '\\']).ToString();
     }
 
     private record TransferSummaryRow

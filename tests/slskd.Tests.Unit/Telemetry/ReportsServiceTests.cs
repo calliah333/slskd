@@ -55,6 +55,110 @@ public class ReportsServiceTests : IDisposable
         new(new ConnectionStringDictionary(
             new Dictionary<Database, ConnectionString> { { Database.Transfers, _connectionString } }));
 
+    private void Insert(string username, TransferDirection direction, string filename, TransferStates state, string endedAt = "2026-01-04 00:10:00", long size = 1000, double averageSpeed = 100)
+    {
+        _anchor.Execute(@"
+            INSERT INTO Transfers (Id, Username, Direction, Filename, Size, State, StateDescription,
+                RequestedAt, EnqueuedAt, StartedAt, EndedAt, BytesTransferred, AverageSpeed, Exception)
+            VALUES (@Id, @Username, @Direction, @Filename, @Size, @State, @StateDescription,
+                '2026-01-04 00:00:00', '2026-01-04 00:00:00', '2026-01-04 00:01:00', @EndedAt, @Size, @AverageSpeed, @Exception)",
+            new
+            {
+                Id = Guid.NewGuid().ToString(),
+                Username = username,
+                Direction = direction.ToString(),
+                Filename = filename,
+                Size = size,
+                State = (int)state,
+                StateDescription = state.ToString(),
+                EndedAt = endedAt,
+                AverageSpeed = averageSpeed,
+                Exception = state == (TransferStates.Completed | TransferStates.Succeeded) ? null : "Transfer failed: boom",
+            });
+    }
+
+    [Fact]
+    public void GetTransferDirectoryFrequency_Matches_Legacy_Sql_Directory_Expression()
+    {
+        var succeeded = TransferStates.Completed | TransferStates.Succeeded;
+
+        string[] filenames =
+        [
+            @"@@abc\Music\Artist\Album\01 - Track.flac",
+            @"@@abc\Music\Artist\Album\02 - Track.flac",
+            "music/Artist/Album/03.mp3",
+            @"mixed/sep\dir/file.ogg",
+            @"double\\sep\\file.flac",
+            @"trailing\dir\",
+            "nosep.mp3",
+            @"unicode\Björk\Homogenic\Jóga.flac",
+        ];
+
+        for (var i = 0; i < filenames.Length; i++)
+        {
+            Insert($"user{i % 3}", TransferDirection.Upload, filenames[i], succeeded);
+        }
+
+        var legacy = _anchor.Query<(string Directory, long Count, long DistinctUsers)>(@"
+            SELECT RTRIM(RTRIM(filename, REPLACE(REPLACE(filename, '/', ''), '\', '')), '/\') AS Directory,
+                COUNT(*) AS Count, COUNT(DISTINCT Username) AS DistinctUsers
+            FROM Transfers
+            GROUP BY Directory")
+            .OrderBy(r => r.Directory, StringComparer.Ordinal)
+            .ToList();
+
+        var actual = CreateService().GetTransferDirectoryFrequency(limit: 100)
+            .Select(r => (r.Directory, (long)r.Count, (long)r.DistinctUsers))
+            .OrderBy(r => r.Directory, StringComparer.Ordinal)
+            .ToList();
+
+        Assert.Equal(legacy, actual);
+        Assert.Contains(actual, r => r.Directory == @"@@abc\Music\Artist\Album" && r.Item2 == 2);
+        Assert.Contains(actual, r => r.Directory == string.Empty);
+    }
+
+    [Fact]
+    public void GetTransferSummary_Keys_By_Direction_And_State_Without_Completed_Flag()
+    {
+        var succeeded = TransferStates.Completed | TransferStates.Succeeded;
+        var errored = TransferStates.Completed | TransferStates.Errored;
+
+        Insert("alice", TransferDirection.Upload, @"a\b.flac", succeeded, size: 100);
+        Insert("bob", TransferDirection.Upload, @"a\c.flac", succeeded, size: 300);
+        Insert("alice", TransferDirection.Upload, @"a\d.flac", errored);
+        Insert("carol", TransferDirection.Download, @"x\y.flac", succeeded);
+
+        var summary = CreateService().GetTransferSummary();
+
+        var uploads = summary[TransferDirection.Upload];
+        Assert.Equal(2, uploads[TransferStates.Succeeded].Count);
+        Assert.Equal(2, uploads[TransferStates.Succeeded].DistinctUsers);
+        Assert.Equal(400, uploads[TransferStates.Succeeded].TotalBytes);
+        Assert.Equal(540, uploads[TransferStates.Succeeded].AverageDuration);
+        Assert.Equal(60, uploads[TransferStates.Succeeded].AverageWait);
+        Assert.Equal(1, uploads[TransferStates.Errored].Count);
+        Assert.Equal(1, summary[TransferDirection.Download][TransferStates.Succeeded].Count);
+    }
+
+    [Fact]
+    public void GetTransferLeaderboard_Counts_Only_Succeeded_Transfers_Per_User()
+    {
+        var succeeded = TransferStates.Completed | TransferStates.Succeeded;
+        var errored = TransferStates.Completed | TransferStates.Errored;
+
+        Insert("alice", TransferDirection.Upload, @"a\1.flac", succeeded);
+        Insert("alice", TransferDirection.Upload, @"a\2.flac", succeeded);
+        Insert("alice", TransferDirection.Upload, @"a\3.flac", errored);
+        Insert("bob", TransferDirection.Upload, @"b\1.flac", succeeded);
+        Insert("carol", TransferDirection.Download, @"c\1.flac", succeeded);
+
+        var leaderboard = CreateService().GetTransferLeaderboard(TransferDirection.Upload);
+
+        Assert.Equal(["alice", "bob"], leaderboard.Select(r => r.Username));
+        Assert.Equal([2L, 1L], leaderboard.Select(r => (long)r.Count));
+        Assert.Equal(540, leaderboard[0].AverageDuration);
+    }
+
     [Fact]
     public void GetTransferHistogram_DropsTransfersInFirstPartialBucket_WhenStartIsNotOnUnixBucketBoundary()
     {

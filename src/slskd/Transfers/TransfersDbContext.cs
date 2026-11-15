@@ -140,6 +140,13 @@ namespace slskd.Transfers
                 .Entity<Transfer>()
                 .HasIndex(e => new { e.Direction, e.Removed, e.EndedAt, e.Id, e.State })
                 .HasDatabaseName("IDX_Transfers_DirectionRemovedEndedAt");
+
+            // covers the summary, histogram, and leaderboard reports (see ReportsService), which filter on State and
+            // a range of EndedAt; covering means time-windowed reports read a slice of this index and never the table
+            modelBuilder
+                .Entity<Transfer>()
+                .HasIndex(e => new { e.State, e.EndedAt, e.Direction, e.Username, e.Size, e.AverageSpeed, e.StartedAt, e.EnqueuedAt })
+                .HasDatabaseName("IDX_Transfers_Reports");
         }
 
         private void ConfigureBatches(ModelBuilder modelBuilder)
