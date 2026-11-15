@@ -56,3 +56,37 @@
   display: inline;
   margin-left: auto;
 }
+
+.transfers-filter-menu {
+  flex-wrap: wrap;
+}
+
+/* semantic's secondary menu and pagination hardcode dark text; follow the theme instead */
+.ui.menu.transfers-filter-menu .item,
+.transfers-pagination .ui.pagination.menu .item {
+  color: var(--smui-site-body-text-color, rgba(0, 0, 0, 0.87));
+}
+
+.ui.secondary.pointing.menu.transfers-filter-menu .active.item {
+  color: var(--smui-site-body-text-color, rgba(0, 0, 0, 0.95));
+  border-color: var(--smui-site-body-text-color, #1b1c1d);
+}
+
+.dark .transfers-pagination .ui.pagination.menu {
+  background: var(--slskd-secondary-background);
+  border-color: var(--slskd-tertiary-border-color);
+}
+
+.dark .transfers-pagination .ui.pagination.menu .active.item {
+  background: var(--slskd-hover-background);
+}
+
+.transfers-showing {
+  margin-left: 0.5em;
+}
+
+.transfers-pagination {
+  display: flex;
+  justify-content: flex-end;
+  margin: 1em 0;
+}

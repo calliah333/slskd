@@ -1,6 +1,6 @@
 import { formatBytes, formatBytesAsUnit, getFileName } from '../../lib/util';
 import TransferDetails from './TransferDetails';
-import React, { Component } from 'react';
+import React, { memo, useMemo, useState } from 'react';
 import {
   Button,
   Checkbox,
@@ -15,22 +15,22 @@ import {
 const getColor = (state) => {
   switch (state) {
     case 'InProgress':
-      return { color: 'blue' };
+      return 'blue';
     case 'Completed, Succeeded':
-      return { color: 'green' };
+      return 'green';
     case 'Requested':
     case 'Queued, Locally':
     case 'Queued, Remotely':
     case 'Queued':
-      return {};
+      return undefined;
     case 'Initializing':
-      return { color: 'teal' };
+      return 'teal';
     default:
-      return { color: 'red' };
+      return 'red';
   }
 };
 
-const isRetryableState = (state) => getColor(state).color === 'red';
+const isRetryableState = (state) => getColor(state) === 'red';
 const isQueuedState = (state) => state.includes('Queued');
 
 const formatBytesTransferred = ({ size, transferred }) => {
@@ -40,194 +40,247 @@ const formatBytesTransferred = ({ size, transferred }) => {
   return `${t}/${s} ${sExtension}`;
 };
 
-class TransferList extends Component {
-  constructor(props) {
-    super(props);
+const progressStyle = { margin: 0 };
+const downloadButtonStyle = { cursor: '', margin: 0, padding: 7 };
+const uploadButtonStyle = { cursor: 'unset', margin: 0, padding: 7 };
+const sizeStyle = {
+  alignItems: 'center',
+  display: 'flex',
+  justifyContent: 'space-between',
+};
+const popupStyle = { maxWidth: '600px' };
 
-    this.state = {
-      isFolded: false,
+// the fields a row displays (directly or via TransferDetails) that change while a transfer is alive.
+// id, username, filename, size and direction never change for a given id.
+const ROW_FIELDS = [
+  'id',
+  'state',
+  'bytesTransferred',
+  'percentComplete',
+  'placeInQueue',
+  'attempts',
+  'averageSpeed',
+];
+
+const isSameTransfer = (a, b) =>
+  a === b || ROW_FIELDS.every((field) => a[field] === b[field]);
+
+// polls replace every transfer object, so compare by value: only rows whose
+// visible state actually changed re-render
+const areRowPropsEqual = (previous, next) =>
+  previous.selected === next.selected &&
+  previous.onSelectionChange === next.onSelectionChange &&
+  previous.onRetryRequested === next.onRetryRequested &&
+  previous.onPlaceInQueueRequested === next.onPlaceInQueueRequested &&
+  isSameTransfer(previous.file, next.file);
+
+// skip the whole directory (table chrome included) when none of its rows changed
+const areListPropsEqual = (previous, next) =>
+  previous.directoryName === next.directoryName &&
+  previous.selection === next.selection &&
+  previous.onSelectAll === next.onSelectAll &&
+  previous.onSelectionChange === next.onSelectionChange &&
+  previous.onRetryRequested === next.onRetryRequested &&
+  previous.onPlaceInQueueRequested === next.onPlaceInQueueRequested &&
+  previous.files.length === next.files.length &&
+  previous.files.every((file, index) =>
+    isSameTransfer(file, next.files[index]),
+  );
+
+const TransferListRow = memo(
+  ({
+    file,
+    onPlaceInQueueRequested,
+    onRetryRequested,
+    onSelectionChange,
+    selected,
+  }) => {
+    const {
+      attempts,
+      bytesTransferred,
+      direction,
+      filename,
+      percentComplete,
+      placeInQueue,
+      size,
+      state,
+    } = file;
+    const color = getColor(state);
+    const isDownload = direction === 'Download';
+
+    const handleClick = () => {
+      if (isDownload) {
+        if (isRetryableState(state)) {
+          return onRetryRequested(file);
+        }
+
+        if (isQueuedState(state)) {
+          return onPlaceInQueueRequested(file);
+        }
+      }
+
+      return undefined;
     };
-  }
-
-  handleClick = (file) => {
-    const { direction, state } = file;
-
-    if (direction === 'Download') {
-      if (isRetryableState(state)) {
-        return this.props.onRetryRequested(file);
-      }
-
-      if (isQueuedState(state)) {
-        return this.props.onPlaceInQueueRequested(file);
-      }
-    }
-
-    return undefined;
-  };
-
-  toggleFolded = () => {
-    this.setState((previousState) => ({ isFolded: !previousState.isFolded }));
-  };
-
-  render() {
-    const { directoryName, files, onSelectionChange } = this.props;
-    const { isFolded } = this.state;
 
     return (
-      <div>
-        <Header
-          className="filelist-header"
-          size="small"
-        >
-          <Icon
-            link
-            name={isFolded ? 'folder' : 'folder open'}
-            onClick={() => this.toggleFolded()}
+      <Table.Row>
+        <Table.Cell className="transferlist-selector">
+          <Checkbox
+            checked={selected}
+            fitted
+            onChange={(event, data) => onSelectionChange(file, data.checked)}
           />
-          {directoryName}
-        </Header>
-        {isFolded === false ? (
-          <List>
-            <List.Item>
-              <Table>
-                <Table.Header>
-                  <Table.Row>
-                    <Table.HeaderCell className="transferlist-selector">
-                      <Checkbox
-                        checked={files.filter((f) => !f.selected).length === 0}
-                        fitted
-                        onChange={(event, data) =>
-                          files.map((file) =>
-                            onSelectionChange(
-                              directoryName,
-                              file,
-                              data.checked,
-                            ),
-                          )
-                        }
-                      />
-                    </Table.HeaderCell>
-                    <Table.HeaderCell className="transferlist-filename">
-                      File
-                    </Table.HeaderCell>
-                    <Table.HeaderCell className="transferlist-progress">
-                      Progress
-                    </Table.HeaderCell>
-                    <Table.HeaderCell className="transferlist-size">
-                      Size
-                    </Table.HeaderCell>
-                    <Table.HeaderCell className="transferlist-detail">
-                      <Icon
-                        name="info circle"
-                        size="small"
-                      />
-                    </Table.HeaderCell>
-                  </Table.Row>
-                </Table.Header>
-                <Table.Body>
-                  {files
-                    .sort((a, b) =>
-                      getFileName(a.filename).localeCompare(
-                        getFileName(b.filename),
-                      ),
-                    )
-                    .map((f) => (
-                      <Table.Row key={f.filename}>
-                        <Table.Cell className="transferlist-selector">
-                          <Checkbox
-                            checked={f.selected}
-                            fitted
-                            onChange={(event, data) =>
-                              onSelectionChange(directoryName, f, data.checked)
-                            }
-                          />
-                        </Table.Cell>
-                        <Table.Cell className="transferlist-filename">
-                          {getFileName(f.filename)}
-                        </Table.Cell>
-                        <Table.Cell className="transferlist-progress">
-                          {f.state === 'InProgress' ? (
-                            <Progress
-                              color={getColor(f.state).color}
-                              percent={Math.round(f.percentComplete)}
-                              progress
-                              style={{ margin: 0 }}
-                            />
-                          ) : (
-                            <Button
-                              fluid
-                              size="mini"
-                              style={{
-                                cursor: f.direction === 'Upload' ? 'unset' : '',
-                                margin: 0,
-                                padding: 7,
-                              }}
-                              {...getColor(f.state)}
-                              {...(!getColor(f.state).color && f.attempts > 1
-                                ? { color: 'yellow' }
-                                : {})}
-                              active={f.direction === 'Upload'}
-                              onClick={() => this.handleClick(f)}
-                            >
-                              {f.direction === 'Download' &&
-                                isQueuedState(f.state) && (
-                                  <Icon name="refresh" />
-                                )}
-                              {f.direction === 'Download' &&
-                                isRetryableState(f.state) && (
-                                  <Icon name="redo" />
-                                )}
-                              {f.state}
-                              {f.placeInQueue ? ` (#${f.placeInQueue})` : ''}
-                              {f.attempts > 1 ? ` (Retry #${f.attempts})` : ''}
-                            </Button>
-                          )}
-                        </Table.Cell>
-                        <Table.Cell className="transferlist-size">
-                          <div
-                            style={{
-                              alignItems: 'center',
-                              display: 'flex',
-                              justifyContent: 'space-between',
-                            }}
-                          >
-                            <span>
-                              {formatBytesTransferred({
-                                size: f.size,
-                                transferred: f.bytesTransferred,
-                              })}
-                            </span>
-                          </div>
-                        </Table.Cell>
-                        <Table.Cell className="transferlist-detail">
-                          <Popup
-                            content={<TransferDetails file={f} />}
-                            on="click"
-                            position="left center"
-                            style={{ maxWidth: '600px' }}
-                            trigger={
-                              <Icon
-                                color="grey"
-                                link
-                                name="info circle"
-                                size="small"
-                              />
-                            }
-                            wide="very"
-                          />
-                        </Table.Cell>
-                      </Table.Row>
-                    ))}
-                </Table.Body>
-              </Table>
-            </List.Item>
-          </List>
-        ) : (
-          ''
-        )}
-      </div>
+        </Table.Cell>
+        <Table.Cell className="transferlist-filename">
+          {getFileName(filename)}
+        </Table.Cell>
+        <Table.Cell className="transferlist-progress">
+          {state === 'InProgress' ? (
+            <Progress
+              color={color}
+              percent={Math.round(percentComplete)}
+              progress
+              style={progressStyle}
+            />
+          ) : (
+            <Button
+              active={direction === 'Upload'}
+              color={color ?? (attempts > 1 ? 'yellow' : undefined)}
+              fluid
+              onClick={handleClick}
+              size="mini"
+              style={
+                direction === 'Upload' ? uploadButtonStyle : downloadButtonStyle
+              }
+            >
+              {isDownload && isQueuedState(state) && <Icon name="refresh" />}
+              {isDownload && isRetryableState(state) && <Icon name="redo" />}
+              {state}
+              {placeInQueue ? ` (#${placeInQueue})` : ''}
+              {attempts > 1 ? ` (Retry #${attempts})` : ''}
+            </Button>
+          )}
+        </Table.Cell>
+        <Table.Cell className="transferlist-size">
+          <div style={sizeStyle}>
+            <span>
+              {formatBytesTransferred({ size, transferred: bytesTransferred })}
+            </span>
+          </div>
+        </Table.Cell>
+        <Table.Cell className="transferlist-detail">
+          {/* Popup mounts its content (via Portal) only while open */}
+          <Popup
+            content={<TransferDetails file={file} />}
+            on="click"
+            position="left center"
+            style={popupStyle}
+            trigger={
+              <Icon
+                color="grey"
+                link
+                name="info circle"
+                size="small"
+              />
+            }
+            wide="very"
+          />
+        </Table.Cell>
+      </Table.Row>
     );
-  }
-}
+  },
+  areRowPropsEqual,
+);
 
-export default TransferList;
+const TransferList = ({
+  directoryName,
+  files,
+  onPlaceInQueueRequested,
+  onRetryRequested,
+  onSelectAll,
+  onSelectionChange,
+  selection,
+}) => {
+  const [isFolded, setIsFolded] = useState(false);
+
+  // sort a copy (never the prop) once per new files array, not once per render
+  const sortedFiles = useMemo(
+    () =>
+      files
+        .map((file) => ({ file, name: getFileName(file.filename) }))
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map(({ file }) => file),
+    [files],
+  );
+
+  const allSelected =
+    sortedFiles.length > 0 && sortedFiles.every((f) => selection.has(f.id));
+
+  return (
+    <div>
+      <Header
+        className="filelist-header"
+        size="small"
+      >
+        <Icon
+          link
+          name={isFolded ? 'folder' : 'folder open'}
+          onClick={() => setIsFolded((previous) => !previous)}
+        />
+        {directoryName}
+      </Header>
+      {isFolded === false ? (
+        <List>
+          <List.Item>
+            <Table>
+              <Table.Header>
+                <Table.Row>
+                  <Table.HeaderCell className="transferlist-selector">
+                    <Checkbox
+                      checked={allSelected}
+                      fitted
+                      onChange={(event, data) =>
+                        onSelectAll(sortedFiles, data.checked)
+                      }
+                    />
+                  </Table.HeaderCell>
+                  <Table.HeaderCell className="transferlist-filename">
+                    File
+                  </Table.HeaderCell>
+                  <Table.HeaderCell className="transferlist-progress">
+                    Progress
+                  </Table.HeaderCell>
+                  <Table.HeaderCell className="transferlist-size">
+                    Size
+                  </Table.HeaderCell>
+                  <Table.HeaderCell className="transferlist-detail">
+                    <Icon
+                      name="info circle"
+                      size="small"
+                    />
+                  </Table.HeaderCell>
+                </Table.Row>
+              </Table.Header>
+              <Table.Body>
+                {sortedFiles.map((file) => (
+                  <TransferListRow
+                    file={file}
+                    key={file.id}
+                    onPlaceInQueueRequested={onPlaceInQueueRequested}
+                    onRetryRequested={onRetryRequested}
+                    onSelectionChange={onSelectionChange}
+                    selected={selection.has(file.id)}
+                  />
+                ))}
+              </Table.Body>
+            </Table>
+          </List.Item>
+        </List>
+      ) : (
+        ''
+      )}
+    </div>
+  );
+};
+
+export default memo(TransferList, areListPropsEqual);

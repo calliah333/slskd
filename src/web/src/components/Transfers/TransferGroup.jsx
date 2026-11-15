@@ -1,210 +1,200 @@
 import * as transfers from '../../lib/transfers';
 import TransferList from './TransferList';
-import React, { Component } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { Button, Card, Icon } from 'semantic-ui-react';
 
-class TransferGroup extends Component {
-  constructor(props) {
-    super(props);
+const EMPTY_SELECTION = new Set();
 
-    this.state = {
-      isFolded: false,
-      selections: new Set(),
-    };
+const getFiles = (user) =>
+  (user.directories ?? []).flatMap((directory) => directory.files ?? []);
+
+const handleRetry = async (file) => {
+  const { filename, size, username } = file;
+
+  try {
+    await transfers.download({ files: [{ filename, size }], username });
+  } catch (error) {
+    console.error(error);
   }
+};
 
-  handleSelectionChange = (directoryName, file, selected) => {
-    const { selections } = this.state;
-    const object = JSON.stringify({
-      directory: directoryName,
-      filename: file.filename,
+const handleFetchPlaceInQueue = async (file) => {
+  const { id, username } = file;
+
+  try {
+    await transfers.getPlaceInQueue({ id, username });
+  } catch (error) {
+    console.error(error);
+  }
+};
+
+const TransferGroup = ({ direction, onRefresh, user }) => {
+  const [isFolded, setIsFolded] = useState(false);
+  // transfer ids; replaced (never mutated) on change so memoized rows see the difference
+  const [selection, setSelection] = useState(EMPTY_SELECTION);
+
+  // drop selected ids that are no longer on the page (removed, filtered out, paged away)
+  useEffect(() => {
+    setSelection((current) => {
+      if (current.size === 0) {
+        return current;
+      }
+
+      const next = new Set(
+        getFiles(user)
+          .filter((file) => current.has(file.id))
+          .map((file) => file.id),
+      );
+
+      return next.size === current.size ? current : next;
     });
+  }, [user]);
 
-    if (selected) {
-      selections.add(object);
-    } else {
-      selections.delete(object);
+  const handleSelectionChange = useCallback((file, checked) => {
+    setSelection((current) => {
+      if (current.has(file.id) === checked) {
+        return current;
+      }
+
+      const next = new Set(current);
+      if (checked) next.add(file.id);
+      else next.delete(file.id);
+
+      return next;
+    });
+  }, []);
+
+  const handleSelectAll = useCallback((files, checked) => {
+    setSelection((current) => {
+      const next = new Set(current);
+
+      for (const file of files) {
+        if (checked) next.add(file.id);
+        else next.delete(file.id);
+      }
+
+      return next;
+    });
+  }, []);
+
+  const selected = useMemo(() => {
+    if (selection.size === 0) {
+      return [];
     }
 
-    this.setState({ selections });
-  };
+    return getFiles(user).filter((file) => selection.has(file.id));
+  }, [selection, user]);
 
-  isSelected = (directoryName, file) =>
-    this.state.selections.has(
-      JSON.stringify({ directory: directoryName, filename: file.filename }),
-    );
+  const retrySelected = async () => {
+    // one request for the whole selection; the endpoint rejects concurrent requests (429)
+    const files = [
+      ...new Map(
+        selected.map(({ filename, size }) => [filename, { filename, size }]),
+      ).values(),
+    ];
 
-  getSelectedFiles = () => {
-    const { user } = this.props;
-
-    return Array.from(this.state.selections)
-      .map((s) => JSON.parse(s))
-      .map((s) =>
-        user.directories
-          .find((d) => d.directory === s.directory)
-          ?.files?.find((f) => f.filename === s.filename),
-      )
-      .filter((s) => s !== undefined);
-  };
-
-  removeFileSelection = (file) => {
-    const { selections } = this.state;
-
-    const match = Array.from(selections)
-      .map((s) => JSON.parse(s))
-      .find((s) => s.filename === file.filename);
-
-    if (match) {
-      selections.delete(JSON.stringify(match));
-      this.setState({ selections });
+    try {
+      await transfers.download({ files, username: user.username });
+    } catch (error) {
+      console.error(error);
     }
+
+    onRefresh();
   };
 
-  retryAll = async (selected) => {
-    await Promise.all(selected.map((file) => this.handleRetry(file)));
-  };
-
-  cancelAll = async (direction, username, selected) => {
+  const cancelSelected = async ({ remove = false } = {}) => {
     try {
       await Promise.all(
         selected.map((file) =>
-          transfers.cancel({ direction, id: file.id, username }),
+          transfers.cancel({
+            direction,
+            id: file.id,
+            remove,
+            username: user.username,
+          }),
         ),
       );
     } catch (error) {
       console.error(error);
     }
+
+    onRefresh();
   };
 
-  removeAll = async (direction, username, selected) => {
-    try {
-      await Promise.all(
-        selected.map((file) =>
-          transfers
-            .cancel({ direction, id: file.id, remove: true, username })
-            .then(() => this.removeFileSelection(file)),
-        ),
-      );
-    } catch (error) {
-      console.error(error);
-    }
-  };
+  const all = selected.length > 1 ? ' Selected' : '';
 
-  handleRetry = async (file) => {
-    const { filename, size, username } = file;
+  const allRetryable =
+    direction === 'download' &&
+    selected.every((f) => transfers.isStateRetryable(f.state));
+  const anyCancellable = selected.some((f) =>
+    transfers.isStateCancellable(f.state),
+  );
+  const allRemovable = selected.every((f) =>
+    transfers.isStateRemovable(f.state),
+  );
 
-    try {
-      await transfers.download({ files: [{ filename, size }], username });
-    } catch (error) {
-      console.error(error);
-    }
-  };
-
-  handleFetchPlaceInQueue = async (file) => {
-    const { id, username } = file;
-
-    try {
-      await transfers.getPlaceInQueue({ id, username });
-    } catch (error) {
-      console.error(error);
-    }
-  };
-
-  toggleFolded = () => {
-    this.setState((previousState) => ({ isFolded: !previousState.isFolded }));
-  };
-
-  render() {
-    const { direction, user } = this.props;
-    const { isFolded } = this.state;
-
-    const selected = this.getSelectedFiles();
-    const all = selected.length > 1 ? ' Selected' : '';
-
-    const allRetryable =
-      direction === 'download' &&
-      selected.filter((f) => transfers.isStateRetryable(f.state)).length ===
-        selected.length;
-    const anyCancellable = selected.some((f) =>
-      transfers.isStateCancellable(f.state),
-    );
-    const allRemovable =
-      selected.filter((f) => transfers.isStateRemovable(f.state)).length ===
-      selected.length;
-
-    return (
-      <Card
-        className="transfer-card"
-        key={user.username}
-        raised
-      >
-        <Card.Content>
-          <Card.Header>
-            <Icon
-              link
-              name={isFolded ? 'chevron right' : 'chevron down'}
-              onClick={() => this.toggleFolded()}
+  return (
+    <Card
+      className="transfer-card"
+      raised
+    >
+      <Card.Content>
+        <Card.Header>
+          <Icon
+            link
+            name={isFolded ? 'chevron right' : 'chevron down'}
+            onClick={() => setIsFolded((previous) => !previous)}
+          />
+          {user.username}
+        </Card.Header>
+        {user.directories &&
+          !isFolded &&
+          user.directories.map((directory) => (
+            <TransferList
+              directoryName={directory.directory}
+              files={directory.files ?? []}
+              key={directory.directory}
+              onPlaceInQueueRequested={handleFetchPlaceInQueue}
+              onRetryRequested={handleRetry}
+              onSelectAll={handleSelectAll}
+              onSelectionChange={handleSelectionChange}
+              selection={selection}
             />
-            {user.username}
-          </Card.Header>
-          {user.directories &&
-            !isFolded &&
-            user.directories.map((directory) => (
-              <TransferList
-                direction={this.props.direction}
-                directoryName={directory.directory}
-                files={(directory.files || []).map((f) => ({
-                  ...f,
-                  selected: this.isSelected(directory.directory, f),
-                }))}
-                key={directory.directory}
-                onPlaceInQueueRequested={this.handleFetchPlaceInQueue}
-                onRetryRequested={this.handleRetry}
-                onSelectionChange={this.handleSelectionChange}
-                username={user.username}
+          ))}
+      </Card.Content>
+      {selected.length > 0 && (
+        <Card.Content extra>
+          <Button.Group>
+            {allRetryable && (
+              <Button
+                color="green"
+                content={`Retry${all}`}
+                icon="redo"
+                onClick={retrySelected}
               />
-            ))}
+            )}
+            {allRetryable && anyCancellable && <Button.Or />}
+            {anyCancellable && (
+              <Button
+                color="red"
+                content={`Cancel${all}`}
+                icon="x"
+                onClick={() => cancelSelected()}
+              />
+            )}
+            {(allRetryable || anyCancellable) && allRemovable && <Button.Or />}
+            {allRemovable && (
+              <Button
+                content={`Remove${all}`}
+                icon="trash alternate"
+                onClick={() => cancelSelected({ remove: true })}
+              />
+            )}
+          </Button.Group>
         </Card.Content>
-        {selected && selected.length > 0 && (
-          <Card.Content extra>
-            <Button.Group>
-              {allRetryable && (
-                <Button
-                  color="green"
-                  content={`Retry${all}`}
-                  icon="redo"
-                  onClick={() => this.retryAll(selected)}
-                />
-              )}
-              {allRetryable && anyCancellable && <Button.Or />}
-              {anyCancellable && (
-                <Button
-                  color="red"
-                  content={`Cancel${all}`}
-                  icon="x"
-                  onClick={() =>
-                    this.cancelAll(direction, user.username, selected)
-                  }
-                />
-              )}
-              {(allRetryable || anyCancellable) && allRemovable && (
-                <Button.Or />
-              )}
-              {allRemovable && (
-                <Button
-                  content={`Remove${all}`}
-                  icon="trash alternate"
-                  onClick={() =>
-                    this.removeAll(direction, user.username, selected)
-                  }
-                />
-              )}
-            </Button.Group>
-          </Card.Content>
-        )}
-      </Card>
-    );
-  }
-}
+      )}
+    </Card>
+  );
+};
 
-export default TransferGroup;
+export default memo(TransferGroup);
