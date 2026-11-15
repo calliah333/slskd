@@ -122,28 +122,74 @@ namespace slskd.Transfers.API
         }
 
         /// <summary>
-        ///     Removes all completed downloads, regardless of whether they failed or succeeded.
+        ///     Removes all completed downloads, regardless of whether they failed or succeeded, or only those matching the
+        ///     optional <paramref name="filter"/>.
         /// </summary>
+        /// <param name="filter">An optional filter; one of completed (default), succeeded, errored, or cancelled.</param>
         /// <returns></returns>
         /// <response code="204">The downloads were removed successfully.</response>
+        /// <response code="400">The specified filter is not valid.</response>
         [HttpDelete("downloads/all/completed")]
         [Authorize(Policy = AuthPolicy.Any, Roles = AuthRole.ReadWriteOrAdministrator)]
         [ProducesResponseType(204)]
-        public IActionResult ClearCompletedDownloads()
+        [ProducesResponseType(typeof(string), 400)]
+        public IActionResult ClearCompletedDownloads([FromQuery] string filter = null)
         {
             if (Program.IsRelayAgent)
             {
                 return Forbid();
             }
 
+            if (!TryParseCompletedFilter(filter, out var states))
+            {
+                return BadRequest($"Invalid filter '{filter}'; expected one of completed, succeeded, errored, cancelled");
+            }
+
             try
             {
-                Transfers.Downloads.Remove(t => !t.Removed && TransferStateCategories.Completed.Contains(t.State));
+                Transfers.Downloads.Remove(t => !t.Removed && states.Contains(t.State));
                 return NoContent();
             }
             catch (Exception ex)
             {
                 Log.Error(ex, "Failed to remove completed downloads: {Message}", ex.Message);
+                return StatusCode(500, ex.Message);
+            }
+        }
+
+        /// <summary>
+        ///     Cancels all active downloads, or only those matching the optional <paramref name="filter"/>.
+        /// </summary>
+        /// <param name="filter">An optional filter; one of all (default), queued, or inprogress.</param>
+        /// <returns></returns>
+        /// <response code="200">The matching downloads were cancelled.</response>
+        /// <response code="400">The specified filter is not valid.</response>
+        [HttpPost("downloads/all/cancel")]
+        [Authorize(Policy = AuthPolicy.Any, Roles = AuthRole.ReadWriteOrAdministrator)]
+        [ProducesResponseType(typeof(CancelTransfersResponse), 200)]
+        [ProducesResponseType(typeof(string), 400)]
+        public IActionResult CancelDownloads([FromQuery] string filter = null)
+        {
+            if (Program.IsRelayAgent)
+            {
+                return Forbid();
+            }
+
+            if (!TransferPaging.TryParseCancelFilter(filter, out var parsed))
+            {
+                return BadRequest($"Invalid filter '{filter}'; expected one of all, queued, inprogress");
+            }
+
+            try
+            {
+                var matched = Transfers.Downloads.ListActive(parsed);
+                var cancelled = matched.Count(t => Transfers.Downloads.TryCancel(t.Id));
+
+                return Ok(new CancelTransfersResponse { Matched = matched.Count, Cancelled = cancelled });
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Failed to cancel downloads: {Message}", ex.Message);
                 return StatusCode(500, ex.Message);
             }
         }
@@ -191,28 +237,74 @@ namespace slskd.Transfers.API
         }
 
         /// <summary>
-        ///     Removes all completed uploads, regardless of whether they failed or succeeded.
+        ///     Removes all completed uploads, regardless of whether they failed or succeeded, or only those matching the
+        ///     optional <paramref name="filter"/>.
         /// </summary>
+        /// <param name="filter">An optional filter; one of completed (default), succeeded, errored, or cancelled.</param>
         /// <returns></returns>
         /// <response code="204">The uploads were removed successfully.</response>
+        /// <response code="400">The specified filter is not valid.</response>
         [HttpDelete("uploads/all/completed")]
         [Authorize(Policy = AuthPolicy.Any, Roles = AuthRole.ReadWriteOrAdministrator)]
         [ProducesResponseType(204)]
-        public IActionResult ClearCompletedUploads()
+        [ProducesResponseType(typeof(string), 400)]
+        public IActionResult ClearCompletedUploads([FromQuery] string filter = null)
         {
             if (Program.IsRelayAgent)
             {
                 return Forbid();
             }
 
+            if (!TryParseCompletedFilter(filter, out var states))
+            {
+                return BadRequest($"Invalid filter '{filter}'; expected one of completed, succeeded, errored, cancelled");
+            }
+
             try
             {
-                Transfers.Uploads.Remove(t => !t.Removed && TransferStateCategories.Completed.Contains(t.State));
+                Transfers.Uploads.Remove(t => !t.Removed && states.Contains(t.State));
                 return NoContent();
             }
             catch (Exception ex)
             {
                 Log.Error(ex, "Failed to remove completed uploads: {Message}", ex.Message);
+                return StatusCode(500, ex.Message);
+            }
+        }
+
+        /// <summary>
+        ///     Cancels all active uploads, or only those matching the optional <paramref name="filter"/>.
+        /// </summary>
+        /// <param name="filter">An optional filter; one of all (default), queued, or inprogress.</param>
+        /// <returns></returns>
+        /// <response code="200">The matching uploads were cancelled.</response>
+        /// <response code="400">The specified filter is not valid.</response>
+        [HttpPost("uploads/all/cancel")]
+        [Authorize(Policy = AuthPolicy.Any, Roles = AuthRole.ReadWriteOrAdministrator)]
+        [ProducesResponseType(typeof(CancelTransfersResponse), 200)]
+        [ProducesResponseType(typeof(string), 400)]
+        public IActionResult CancelUploads([FromQuery] string filter = null)
+        {
+            if (Program.IsRelayAgent)
+            {
+                return Forbid();
+            }
+
+            if (!TransferPaging.TryParseCancelFilter(filter, out var parsed))
+            {
+                return BadRequest($"Invalid filter '{filter}'; expected one of all, queued, inprogress");
+            }
+
+            try
+            {
+                var matched = Transfers.Uploads.ListActive(parsed);
+                var cancelled = matched.Count(t => Transfers.Uploads.TryCancel(t.Id));
+
+                return Ok(new CancelTransfersResponse { Matched = matched.Count, Cancelled = cancelled });
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Failed to cancel uploads: {Message}", ex.Message);
                 return StatusCode(500, ex.Message);
             }
         }
@@ -454,18 +546,36 @@ namespace slskd.Transfers.API
 
             var downloads = Transfers.Downloads.List(includeRemoved: includeRemoved);
 
-            var response = downloads.GroupBy(t => t.Username).Select(grouping => new UserResponse()
-            {
-                Username = grouping.Key,
-                Directories = grouping.GroupBy(g => g.Filename.DirectoryName()).Select(d => new DirectoryResponse()
-                {
-                    Directory = d.Key,
-                    FileCount = d.Count(),
-                    Files = d.ToList(),
-                }),
-            });
+            var response = GroupByUser(downloads);
 
             return Ok(response);
+        }
+
+        /// <summary>
+        ///     Gets a page of downloads matching the optional <paramref name="filter"/>.
+        /// </summary>
+        /// <remarks>
+        ///     Active downloads come first, oldest request first, followed by completed downloads, most recently ended first.
+        ///     Removed downloads are excluded.
+        /// </remarks>
+        /// <param name="filter">An optional filter; one of all (default), active, completed, succeeded, errored, or cancelled.</param>
+        /// <param name="offset">The number of matching downloads to skip.</param>
+        /// <param name="limit">The maximum number of downloads to return; values greater than 5000 are reduced to 5000.</param>
+        /// <returns></returns>
+        /// <response code="200">The request completed successfully.</response>
+        /// <response code="400">The specified filter, offset, or limit is not valid.</response>
+        [HttpGet("downloads/page")]
+        [Authorize(Policy = AuthPolicy.Any)]
+        [ProducesResponseType(typeof(TransferPageResponse), 200)]
+        [ProducesResponseType(typeof(string), 400)]
+        public IActionResult GetDownloadsPage([FromQuery] string filter = null, [FromQuery] int offset = 0, [FromQuery] int limit = TransferPaging.DefaultLimit)
+        {
+            if (Program.IsRelayAgent)
+            {
+                return Forbid();
+            }
+
+            return Page(Transfers.Downloads.Page, filter, offset, limit);
         }
 
         /// <summary>
@@ -535,12 +645,7 @@ namespace slskd.Transfers.API
             var response = new UserResponse()
             {
                 Username = username,
-                Directories = downloads.GroupBy(g => g.Filename.DirectoryName()).Select(d => new DirectoryResponse()
-                {
-                    Directory = d.Key,
-                    FileCount = d.Count(),
-                    Files = d.ToList(),
-                }),
+                Directories = GroupByDirectory(downloads),
             };
 
             return Ok(response);
@@ -636,18 +741,36 @@ namespace slskd.Transfers.API
             // should be required.  consider pagination.
             var uploads = Transfers.Uploads.List(t => true, includeRemoved: includeRemoved);
 
-            var response = uploads.GroupBy(t => t.Username).Select(grouping => new UserResponse()
-            {
-                Username = grouping.Key,
-                Directories = grouping.GroupBy(g => g.Filename.DirectoryName()).Select(d => new DirectoryResponse()
-                {
-                    Directory = d.Key,
-                    FileCount = d.Count(),
-                    Files = d.ToList(),
-                }),
-            });
+            var response = GroupByUser(uploads);
 
             return Ok(response);
+        }
+
+        /// <summary>
+        ///     Gets a page of uploads matching the optional <paramref name="filter"/>.
+        /// </summary>
+        /// <remarks>
+        ///     Active uploads come first, oldest request first, followed by completed uploads, most recently ended first.
+        ///     Removed uploads are excluded.
+        /// </remarks>
+        /// <param name="filter">An optional filter; one of all (default), active, completed, succeeded, errored, or cancelled.</param>
+        /// <param name="offset">The number of matching uploads to skip.</param>
+        /// <param name="limit">The maximum number of uploads to return; values greater than 5000 are reduced to 5000.</param>
+        /// <returns></returns>
+        /// <response code="200">The request completed successfully.</response>
+        /// <response code="400">The specified filter, offset, or limit is not valid.</response>
+        [HttpGet("uploads/page")]
+        [Authorize(Policy = AuthPolicy.Any)]
+        [ProducesResponseType(typeof(TransferPageResponse), 200)]
+        [ProducesResponseType(typeof(string), 400)]
+        public IActionResult GetUploadsPage([FromQuery] string filter = null, [FromQuery] int offset = 0, [FromQuery] int limit = TransferPaging.DefaultLimit)
+        {
+            if (Program.IsRelayAgent)
+            {
+                return Forbid();
+            }
+
+            return Page(Transfers.Uploads.Page, filter, offset, limit);
         }
 
         /// <summary>
@@ -676,12 +799,7 @@ namespace slskd.Transfers.API
             var response = new UserResponse()
             {
                 Username = username,
-                Directories = uploads.GroupBy(g => g.Filename.DirectoryName()).Select(d => new DirectoryResponse()
-                {
-                    Directory = d.Key,
-                    FileCount = d.Count(),
-                    Files = d.ToList(),
-                }),
+                Directories = GroupByDirectory(uploads),
             };
 
             return Ok(response);
@@ -717,6 +835,81 @@ namespace slskd.Transfers.API
             }
 
             return Ok(upload);
+        }
+
+        private static IEnumerable<UserResponse> GroupByUser(IEnumerable<Transfers.Transfer> transfers)
+        {
+            return transfers.GroupBy(t => t.Username).Select(grouping => new UserResponse()
+            {
+                Username = grouping.Key,
+                Directories = GroupByDirectory(grouping),
+            });
+        }
+
+        private static IEnumerable<DirectoryResponse> GroupByDirectory(IEnumerable<Transfers.Transfer> transfers)
+        {
+            return transfers.GroupBy(t => t.Filename.DirectoryName()).Select(d => new DirectoryResponse()
+            {
+                Directory = d.Key,
+                FileCount = d.Count(),
+                Files = d.ToList(),
+            });
+        }
+
+        private static bool TryParseCompletedFilter(string value, out List<TransferStates> states)
+        {
+            states = null;
+
+            if (!TransferPaging.TryParseFilter(string.IsNullOrWhiteSpace(value) ? nameof(TransferFilter.Completed) : value, out var filter)
+                || filter is TransferFilter.All or TransferFilter.Active)
+            {
+                return false;
+            }
+
+            // materialized as a list; EF can't translate Contains() on an IReadOnlySet
+            states = TransferPaging.CompletedStates(filter).ToList();
+            return true;
+        }
+
+        private IActionResult Page(Func<TransferFilter, int, int, TransferPage> page, string filter, int offset, int limit)
+        {
+            if (!ModelState.IsValid)
+            {
+                return BadRequest(ModelState.GetReadableString());
+            }
+
+            if (!TransferPaging.TryParseFilter(filter, out var parsed))
+            {
+                return BadRequest($"Invalid filter '{filter}'; expected one of all, active, completed, succeeded, errored, cancelled");
+            }
+
+            if (offset < 0)
+            {
+                return BadRequest("Offset must be greater than or equal to zero");
+            }
+
+            if (limit < 1)
+            {
+                return BadRequest("Limit must be greater than zero");
+            }
+
+            limit = Math.Min(limit, TransferPaging.MaxLimit);
+
+            var result = page(parsed, offset, limit);
+
+            return Ok(new TransferPageResponse
+            {
+                Filter = parsed.ToString().ToLowerInvariant(),
+                Offset = offset,
+                Limit = limit,
+                Total = result.Total,
+
+                // keys are formatted the same way JsonStringEnumConverter formats Transfer.State, e.g. "Completed, Succeeded"
+                Counts = result.Counts
+                    .OrderBy(c => c.Key)
+                    .ToDictionary(c => c.Key.ToString(), c => c.Value),
+                Users = GroupByUser(result.Transfers),
+            });
         }
     }
 }

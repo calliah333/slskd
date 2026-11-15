@@ -127,6 +127,19 @@ namespace slskd.Transfers
                 .Entity<Transfer>()
                 .HasIndex(e => new { e.Username, e.Direction, e.EndedAt, e.StartedAt, e.State, e.Size })
                 .HasDatabaseName("IDX_Transfers_UserUploadStatistics");
+
+            // covers the counts by state and the active portion of the paged view (see TransferPaging)
+            modelBuilder
+                .Entity<Transfer>()
+                .HasIndex(e => new { e.Direction, e.Removed, e.State })
+                .HasDatabaseName("IDX_Transfers_DirectionRemovedState");
+
+            // covers the ordering and filtering of the completed portion of the paged view (see TransferPaging);
+            // Id makes the ORDER BY EndedAt DESC, Id DESC fully indexed and State lets filters skip rows without reading them
+            modelBuilder
+                .Entity<Transfer>()
+                .HasIndex(e => new { e.Direction, e.Removed, e.EndedAt, e.Id, e.State })
+                .HasDatabaseName("IDX_Transfers_DirectionRemovedEndedAt");
         }
 
         private void ConfigureBatches(ModelBuilder modelBuilder)

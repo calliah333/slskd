@@ -120,6 +120,24 @@ namespace slskd.Transfers.Uploads
         List<Transfer> List(Expression<Func<Transfer, bool>> expression, bool includeRemoved);
 
         /// <summary>
+        ///     Returns the uploads matching the specified <paramref name="filter"/>, skipping <paramref name="offset"/> and
+        ///     taking at most <paramref name="limit"/>, along with the total number matching and counts by state.
+        /// </summary>
+        /// <remarks>Removed uploads are excluded. Active uploads come first (oldest first), then completed (newest first).</remarks>
+        /// <param name="filter">The filter to apply.</param>
+        /// <param name="offset">The number of matching uploads to skip.</param>
+        /// <param name="limit">The maximum number of uploads to return.</param>
+        /// <returns>The page of uploads.</returns>
+        TransferPage Page(TransferFilter filter, int offset, int limit);
+
+        /// <summary>
+        ///     Returns the non-removed, active uploads matching the specified <paramref name="filter"/>.
+        /// </summary>
+        /// <param name="filter">The filter to apply.</param>
+        /// <returns>The list of matching uploads.</returns>
+        List<Transfer> ListActive(TransferCancelFilter filter);
+
+        /// <summary>
         ///     Removes <see cref="TransferStates.Completed"/> uploads older than the specified <paramref name="age"/>.
         /// </summary>
         /// <param name="age">The age after which uploads are eligible for pruning, in minutes.</param>
@@ -836,6 +854,48 @@ namespace slskd.Transfers.Uploads
             catch (Exception ex)
             {
                 Log.Error(ex, "Failed to list uploads: {Message}", ex.Message);
+                throw;
+            }
+        }
+
+        /// <summary>
+        ///     Returns the uploads matching the specified <paramref name="filter"/>, skipping <paramref name="offset"/> and
+        ///     taking at most <paramref name="limit"/>, along with the total number matching and counts by state.
+        /// </summary>
+        /// <remarks>Removed uploads are excluded. Active uploads come first (oldest first), then completed (newest first).</remarks>
+        /// <param name="filter">The filter to apply.</param>
+        /// <param name="offset">The number of matching uploads to skip.</param>
+        /// <param name="limit">The maximum number of uploads to return.</param>
+        /// <returns>The page of uploads.</returns>
+        public TransferPage Page(TransferFilter filter, int offset, int limit)
+        {
+            try
+            {
+                using var context = ContextFactory.CreateDbContext();
+                return TransferPaging.Page(context, TransferDirection.Upload, filter, offset, limit);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Failed to page uploads: {Message}", ex.Message);
+                throw;
+            }
+        }
+
+        /// <summary>
+        ///     Returns the non-removed, active uploads matching the specified <paramref name="filter"/>.
+        /// </summary>
+        /// <param name="filter">The filter to apply.</param>
+        /// <returns>The list of matching uploads.</returns>
+        public List<Transfer> ListActive(TransferCancelFilter filter)
+        {
+            try
+            {
+                using var context = ContextFactory.CreateDbContext();
+                return TransferPaging.ListActive(context, TransferDirection.Upload, filter);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Failed to list active uploads: {Message}", ex.Message);
                 throw;
             }
         }
