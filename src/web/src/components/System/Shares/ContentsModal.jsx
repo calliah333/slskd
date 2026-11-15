@@ -1,5 +1,6 @@
 import { browse } from '../../../lib/shares';
-import { CodeEditor, LoaderSegment, Switch } from '../../Shared';
+import { LoaderSegment, Switch } from '../../Shared';
+import CodeEditor from '../../Shared/CodeEditor';
 import React, { useEffect, useState } from 'react';
 import { Button, Icon, Modal } from 'semantic-ui-react';
 

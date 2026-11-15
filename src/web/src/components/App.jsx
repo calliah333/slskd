@@ -1,5 +1,17 @@
 import 'react-toastify/dist/ReactToastify.css';
 import './App.css';
+// route stylesheets stay in the main bundle even though their routes are lazy:
+// together they're ~13 KB, some routes use classes from another route's sheet
+// (Browse renders Search.css classes), and this keeps the cascade order unchanged
+import './Browse/Browse.css';
+import './Chat/Chat.css';
+import './Dashboard/Dashboard.css';
+import './Search/Search.css';
+import './Rooms/Rooms.css';
+import './System/System.css';
+import './System/Files/Files.css';
+import './Transfers/Transfers.css';
+import './Users/Users.css';
 import { urlBase } from '../config';
 import {
   createApplicationHubConnection,
@@ -11,18 +23,11 @@ import * as session from '../lib/session';
 import { isPassthroughEnabled } from '../lib/token';
 import AppContext from './AppContext';
 import AppFooter from './AppFooter';
-import Browse from './Browse/Browse';
-import Chat from './Chat/Chat';
-import Dashboard from './Dashboard/Dashboard';
 import LoginForm from './LoginForm';
-import Rooms from './Rooms/Rooms';
-import Searches from './Search/Searches';
 import ErrorSegment from './Shared/ErrorSegment';
-import System from './System/System';
-import Transfers from './Transfers/Transfers';
-import Users from './Users/Users';
-import React, { Component } from 'react';
-import { Link, Redirect, Route, Switch } from 'react-router-dom';
+import LoaderSegment from './Shared/LoaderSegment';
+import React, { Component, lazy, Suspense, useEffect, useMemo } from 'react';
+import { Link, Redirect, Route, Switch, useLocation } from 'react-router-dom';
 import { ToastContainer } from 'react-toastify';
 import {
   Button,
@@ -47,6 +52,214 @@ const initialState = {
   retriesExhausted: false,
   transferMetrics: {},
 };
+
+// each route is its own chunk, keyed by the first path segment after urlBase
+const routeLoaders = {
+  browse: () => import('./Browse/Browse'),
+  chat: () => import('./Chat/Chat'),
+  dashboard: () => import('./Dashboard/Dashboard'),
+  downloads: () => import('./Transfers/Transfers'),
+  rooms: () => import('./Rooms/Rooms'),
+  searches: () => import('./Search/Searches'),
+  system: () => import('./System/System'),
+  uploads: () => import('./Transfers/Transfers'),
+  users: () => import('./Users/Users'),
+};
+
+const Browse = lazy(routeLoaders.browse);
+const Chat = lazy(routeLoaders.chat);
+const Dashboard = lazy(routeLoaders.dashboard);
+const Rooms = lazy(routeLoaders.rooms);
+const Searches = lazy(routeLoaders.searches);
+const System = lazy(routeLoaders.system);
+const Transfers = lazy(routeLoaders.downloads);
+const Users = lazy(routeLoaders.users);
+
+// start fetching the current route's chunk right away so it downloads while
+// the session check and hub connections are in flight, instead of after them
+const preloadCurrentRoute = async () => {
+  const segment = window.location.pathname.slice(urlBase.length).split('/')[1];
+  const load = routeLoaders[segment] ?? routeLoaders.dashboard;
+
+  try {
+    await load();
+  } catch {
+    // the route's own import() retries when it renders; failures surface there
+  }
+};
+
+// keeps a failed chunk download (e.g. a stale tab after an upgrade) from blanking the app
+class RouteErrorBoundary extends Component {
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  // navigating away clears the error
+  static getDerivedStateFromProps(props, state) {
+    if (props.resetKey !== state.resetKey) {
+      return { error: undefined, resetKey: props.resetKey };
+    }
+
+    return null;
+  }
+
+  constructor(props) {
+    super(props);
+
+    this.state = { error: undefined, resetKey: props.resetKey };
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <ErrorSegment
+          caption={`${this.state.error?.message ?? this.state.error}; refresh to try again`}
+        />
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
+// memoized so the once-per-second transfer metrics update (and anything else in
+// App's state that routes don't consume) doesn't re-render the active page
+const AppRoutes = React.memo(
+  ({ applicationOptions, applicationState, isAgent, theme }) => {
+    const { pathname } = useLocation();
+
+    // verify the session on navigation; expired sessions are logged out
+    useEffect(() => {
+      const check = async () => {
+        try {
+          await session.check();
+        } catch (error) {
+          console.error(error);
+        }
+      };
+
+      check();
+    }, [pathname]);
+
+    const contextValue = useMemo(
+      () => ({ options: applicationOptions, state: applicationState }),
+      [applicationOptions, applicationState],
+    );
+
+    return (
+      <AppContext.Provider value={contextValue}>
+        <RouteErrorBoundary resetKey={pathname}>
+          <Suspense fallback={<LoaderSegment />}>
+            {isAgent ? (
+              <Switch>
+                <Route
+                  path={`${urlBase}/system/:tab?`}
+                  render={(props) => (
+                    <System
+                      {...props}
+                      options={applicationOptions}
+                      state={applicationState}
+                    />
+                  )}
+                />
+                <Redirect
+                  from="*"
+                  to={`${urlBase}/system`}
+                />
+              </Switch>
+            ) : (
+              <Switch>
+                <Route
+                  path={`${urlBase}/dashboard`}
+                  render={(props) => (
+                    <div className="view">
+                      <Dashboard
+                        server={applicationState.server}
+                        {...props}
+                      />
+                    </div>
+                  )}
+                />
+                <Route
+                  path={`${urlBase}/searches/:id?`}
+                  render={(props) => (
+                    <div className="view">
+                      <Searches
+                        server={applicationState.server}
+                        {...props}
+                      />
+                    </div>
+                  )}
+                />
+                <Route
+                  path={`${urlBase}/browse`}
+                  render={(props) => <Browse {...props} />}
+                />
+                <Route
+                  path={`${urlBase}/users`}
+                  render={(props) => <Users {...props} />}
+                />
+                <Route
+                  path={`${urlBase}/chat`}
+                  render={(props) => (
+                    <Chat
+                      {...props}
+                      state={applicationState}
+                    />
+                  )}
+                />
+                <Route
+                  path={`${urlBase}/rooms`}
+                  render={(props) => <Rooms {...props} />}
+                />
+                <Route
+                  path={`${urlBase}/uploads`}
+                  render={(props) => (
+                    <div className="view">
+                      <Transfers
+                        {...props}
+                        direction="upload"
+                      />
+                    </div>
+                  )}
+                />
+                <Route
+                  path={`${urlBase}/downloads`}
+                  render={(props) => (
+                    <div className="view">
+                      <Transfers
+                        {...props}
+                        direction="download"
+                        server={applicationState.server}
+                      />
+                    </div>
+                  )}
+                />
+                <Route
+                  path={`${urlBase}/system/:tab?`}
+                  render={(props) => (
+                    <System
+                      {...props}
+                      options={applicationOptions}
+                      state={applicationState}
+                      theme={theme}
+                    />
+                  )}
+                />
+                <Redirect
+                  from="*"
+                  to={`${urlBase}/dashboard`}
+                />
+              </Switch>
+            )}
+          </Suspense>
+        </RouteErrorBoundary>
+      </AppContext.Provider>
+    );
+  },
+);
+
+AppRoutes.displayName = 'AppRoutes';
 
 const ModeSpecificConnectButton = ({
   connectionWatchdog,
@@ -176,20 +389,26 @@ class App extends Component {
         );
     }
 
+    preloadCurrentRoute();
     this.init();
   }
 
   init = async () => {
     this.setState({ initialized: false }, async () => {
       try {
-        const securityEnabled = await session.getSecurityEnabled();
+        // the session check doesn't depend on the security flag: with security
+        // disabled the server authenticates every request, so run both at once
+        const [securityEnabled, isSessionValid] = await Promise.all([
+          session.getSecurityEnabled(),
+          session.check(),
+        ]);
 
         if (!securityEnabled) {
           console.debug('application security is not enabled, per api call');
           session.enablePassthrough();
         }
 
-        if (await session.check()) {
+        if (isSessionValid) {
           const appHub = createApplicationHubConnection();
 
           appHub.on('state', (state) => {
@@ -210,19 +429,25 @@ class App extends Component {
             this.setState({ error: false, retriesExhausted: false }),
           );
 
-          await this.hubConnections.appHub?.stop();
-          this.hubConnections.appHub = appHub;
-          await appHub.start();
-
           const metricsHub = createMetricsHubConnection();
 
           metricsHub.on('Update', (metrics) => {
             this.setState({ transferMetrics: metrics });
           });
 
-          await this.hubConnections.metricsHub?.stop();
-          this.hubConnections.metricsHub = metricsHub;
-          await metricsHub.start();
+          // the hubs are independent; connect them concurrently
+          await Promise.all([
+            (async () => {
+              await this.hubConnections.appHub?.stop();
+              this.hubConnections.appHub = appHub;
+              await appHub.start();
+            })(),
+            (async () => {
+              await this.hubConnections.metricsHub?.stop();
+              this.hubConnections.metricsHub = metricsHub;
+              await metricsHub.start();
+            })(),
+          ]);
         }
 
         const savedTheme = this.getSavedTheme();
@@ -284,11 +509,6 @@ class App extends Component {
     this.hubConnections?.metricsHub?.stop();
 
     this.setState({ login: { ...initialState.login } });
-  };
-
-  withTokenCheck = (component) => {
-    session.check(); // async, runs in the background
-    return { ...component };
   };
 
   render() {
@@ -553,135 +773,12 @@ class App extends Component {
           </Sidebar>
           <Sidebar.Pusher className="app-content">
             <div className="app-content-body">
-              <AppContext.Provider
-                // eslint-disable-next-line no-warning-comments
-                // TODO: needs useMemo, but class component. yolo for now.
-                // eslint-disable-next-line react/jsx-no-constructed-context-values
-                value={{ options: applicationOptions, state: applicationState }}
-              >
-                {isAgent ? (
-                  <Switch>
-                    <Route
-                      path={`${urlBase}/system/:tab?`}
-                      render={(props) =>
-                        this.withTokenCheck(
-                          <System
-                            {...props}
-                            options={applicationOptions}
-                            state={applicationState}
-                          />,
-                        )
-                      }
-                    />
-                    <Redirect
-                      from="*"
-                      to={`${urlBase}/system`}
-                    />
-                  </Switch>
-                ) : (
-                  <Switch>
-                    <Route
-                      path={`${urlBase}/dashboard`}
-                      render={(props) =>
-                        this.withTokenCheck(
-                          <div className="view">
-                            <Dashboard
-                              server={applicationState.server}
-                              {...props}
-                            />
-                          </div>,
-                        )
-                      }
-                    />
-                    <Route
-                      path={`${urlBase}/searches/:id?`}
-                      render={(props) =>
-                        this.withTokenCheck(
-                          <div className="view">
-                            <Searches
-                              server={applicationState.server}
-                              {...props}
-                            />
-                          </div>,
-                        )
-                      }
-                    />
-                    <Route
-                      path={`${urlBase}/browse`}
-                      render={(props) =>
-                        this.withTokenCheck(<Browse {...props} />)
-                      }
-                    />
-                    <Route
-                      path={`${urlBase}/users`}
-                      render={(props) =>
-                        this.withTokenCheck(<Users {...props} />)
-                      }
-                    />
-                    <Route
-                      path={`${urlBase}/chat`}
-                      render={(props) =>
-                        this.withTokenCheck(
-                          <Chat
-                            {...props}
-                            state={applicationState}
-                          />,
-                        )
-                      }
-                    />
-                    <Route
-                      path={`${urlBase}/rooms`}
-                      render={(props) =>
-                        this.withTokenCheck(<Rooms {...props} />)
-                      }
-                    />
-                    <Route
-                      path={`${urlBase}/uploads`}
-                      render={(props) =>
-                        this.withTokenCheck(
-                          <div className="view">
-                            <Transfers
-                              {...props}
-                              direction="upload"
-                            />
-                          </div>,
-                        )
-                      }
-                    />
-                    <Route
-                      path={`${urlBase}/downloads`}
-                      render={(props) =>
-                        this.withTokenCheck(
-                          <div className="view">
-                            <Transfers
-                              {...props}
-                              direction="download"
-                              server={applicationState.server}
-                            />
-                          </div>,
-                        )
-                      }
-                    />
-                    <Route
-                      path={`${urlBase}/system/:tab?`}
-                      render={(props) =>
-                        this.withTokenCheck(
-                          <System
-                            {...props}
-                            options={applicationOptions}
-                            state={applicationState}
-                            theme={theme}
-                          />,
-                        )
-                      }
-                    />
-                    <Redirect
-                      from="*"
-                      to={`${urlBase}/dashboard`}
-                    />
-                  </Switch>
-                )}
-              </AppContext.Provider>
+              <AppRoutes
+                applicationOptions={applicationOptions}
+                applicationState={applicationState}
+                isAgent={isAgent}
+                theme={theme}
+              />
             </div>
           </Sidebar.Pusher>
         </Sidebar.Pushable>

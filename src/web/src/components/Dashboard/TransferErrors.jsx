@@ -1,5 +1,5 @@
 import * as reports from '../../lib/reports';
-import { Graph } from '../Shared';
+import Graph from '../Shared/Graph';
 import ExceptionList from './ExceptionList';
 import ExceptionPareto from './ExceptionPareto';
 import React, { useEffect, useMemo, useState } from 'react';

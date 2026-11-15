@@ -1,10 +1,6 @@
 import { getVersion, restart, shutdown } from '../../../lib/application';
-import {
-  CodeEditor,
-  LoaderSegment,
-  ShrinkableButton,
-  Switch,
-} from '../../Shared';
+import { LoaderSegment, ShrinkableButton, Switch } from '../../Shared';
+import CodeEditor from '../../Shared/CodeEditor';
 import React, { useEffect, useState } from 'react';
 import { Divider, Header, Modal } from 'semantic-ui-react';
 import YAML from 'yaml';

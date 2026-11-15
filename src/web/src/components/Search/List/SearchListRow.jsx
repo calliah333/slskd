@@ -57,4 +57,5 @@ const SearchListRow = ({ onRemove, onStop, search }) => {
   );
 };
 
-export default SearchListRow;
+// hub updates replace one search at a time; unchanged rows skip rendering
+export default React.memo(SearchListRow);

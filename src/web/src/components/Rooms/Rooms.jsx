@@ -1,5 +1,7 @@
 import { activeRoomKey, urlBase } from '../../config';
+import { poll } from '../../lib/polling';
 import * as rooms from '../../lib/rooms';
+import { formatMessageTimestamp } from '../../lib/util';
 import PlaceholderSegment from '../Shared/PlaceholderSegment';
 import RoomMenu from './RoomMenu';
 import RoomUserList from './RoomUserList';
@@ -26,10 +28,6 @@ const initialState = {
     x: 0,
     y: 0,
   },
-  intervals: {
-    messages: undefined,
-    rooms: undefined,
-  },
   joined: [],
   loading: false,
   message: '',
@@ -38,6 +36,25 @@ const initialState = {
     users: [],
   },
 };
+
+// rooms are polled every second; remembering each fetched array's JSON lets
+// an identical poll result be detected with one stringify instead of two
+const jsonCache = new WeakMap();
+
+const toJson = (value) => {
+  let json = jsonCache.get(value);
+
+  if (json === undefined) {
+    json = JSON.stringify(value);
+    jsonCache.set(value, json);
+  }
+
+  return json;
+};
+
+// the previous value if the next one has the same content, otherwise the next
+const keepIfUnchanged = (previous, next) =>
+  toJson(previous) === toJson(next) ? previous : next;
 
 const RoomMessageHistory = React.memo(
   ({ formatTimestamp, messages, onHandleContextMenu }) => {
@@ -77,25 +94,14 @@ class Rooms extends Component {
   }
 
   componentDidMount() {
+    this.stopPolling = [
+      poll(this.fetchActiveRoom, 1_000, { immediate: false }),
+      poll(this.fetchJoinedRooms, 500, { immediate: false }),
+    ];
+
     this.setState(
       {
         active: sessionStorage.getItem(activeRoomKey) || '',
-        intervals: {
-          messages: window.setInterval(async () => {
-            try {
-              await this.fetchActiveRoom();
-            } catch (error) {
-              console.error(error);
-            }
-          }, 1_000),
-          rooms: window.setInterval(async () => {
-            try {
-              await this.fetchJoinedRooms();
-            } catch (error) {
-              console.error(error);
-            }
-          }, 500),
-        },
       },
       async () => {
         await this.fetchJoinedRooms();
@@ -106,15 +112,11 @@ class Rooms extends Component {
   }
 
   componentWillUnmount() {
-    const { messages: messagesInterval, rooms: roomsInterval } =
-      this.state.intervals;
-
-    clearInterval(roomsInterval);
-    clearInterval(messagesInterval);
+    for (const stop of this.stopPolling) {
+      stop();
+    }
 
     document.removeEventListener('click', this.handleCloseContextMenu);
-
-    this.setState({ intervals: initialState.intervals });
   }
 
   listRef = createRef();
@@ -127,9 +129,12 @@ class Rooms extends Component {
 
   fetchJoinedRooms = async () => {
     const joined = await rooms.getJoined();
+
+    // no state change when the list is the same, so nothing re-renders
     this.setState(
-      {
-        joined,
+      (previousState) => {
+        const next = keepIfUnchanged(previousState.joined, joined);
+        return next === previousState.joined ? null : { joined: next };
       },
       () => {
         if (!this.state.joined.includes(this.state.active)) {
@@ -144,14 +149,22 @@ class Rooms extends Component {
 
     if (active.length === 0) return;
 
-    const messages = await rooms.getMessages({ roomName: active });
-    const users = await rooms.getUsers({ roomName: active });
+    const [messages, users] = await Promise.all([
+      rooms.getMessages({ roomName: active }),
+      rooms.getUsers({ roomName: active }),
+    ]);
 
-    this.setState({
-      room: {
-        messages,
-        users,
-      },
+    // keep unchanged arrays so the memoized history and user list (which can
+    // hold thousands of users) only re-render when their own data changes
+    this.setState(({ room }) => {
+      const next = {
+        messages: keepIfUnchanged(room.messages, messages),
+        users: keepIfUnchanged(room.users, users),
+      };
+
+      return next.messages === room.messages && next.users === room.users
+        ? null
+        : { room: next };
     });
   };
 
@@ -204,18 +217,6 @@ class Rooms extends Component {
 
   focusInput = () => {
     this.messageRef.current.focus();
-  };
-
-  formatTimestamp = (timestamp) => {
-    const date = new Date(timestamp);
-    const dtfUS = new Intl.DateTimeFormat('en', {
-      day: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-      month: 'numeric',
-    });
-
-    return dtfUS.format(date);
   };
 
   sendMessage = async () => {
@@ -368,7 +369,7 @@ class Rooms extends Component {
                         <Ref innerRef={this.listRef}>
                           <List>
                             <RoomMessageHistory
-                              formatTimestamp={this.formatTimestamp}
+                              formatTimestamp={formatMessageTimestamp}
                               messages={room.messages}
                               onHandleContextMenu={this.handleContextMenu}
                             />

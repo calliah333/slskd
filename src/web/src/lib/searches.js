@@ -128,6 +128,22 @@ export const filterResponse = ({
     return { ...response, files: [] };
   }
 
+  const {
+    isCBR,
+    isVBR,
+    isLossless,
+    isLossy,
+    minBitRate,
+    minBitDepth,
+    minFileSize,
+    minLength,
+    include = [],
+    exclude = [],
+  } = filters;
+  // an empty include term matches everything (the parser yields one for an empty string)
+  const includeTerms = include.filter((term) => term !== '');
+  const hasTerms = includeTerms.length > 0 || exclude.length > 0;
+
   const filterFiles = (filesToFilter) =>
     filesToFilter.filter((file) => {
       const {
@@ -139,18 +155,6 @@ export const filterResponse = ({
         bitDepth,
         isVariableBitRate,
       } = file;
-      const {
-        isCBR,
-        isVBR,
-        isLossless,
-        isLossy,
-        minBitRate,
-        minBitDepth,
-        minFileSize,
-        minLength,
-        include = [],
-        exclude = [],
-      } = filters;
 
       if (isCBR && (isVariableBitRate === undefined || isVariableBitRate))
         return false;
@@ -163,22 +167,33 @@ export const filterResponse = ({
       if (size < minFileSize) return false;
       if (length < minLength) return false;
 
-      if (
-        include.length > 0 &&
-        include.filter((term) => filename.toLowerCase().includes(term))
-          .length !== include.length
-      ) {
-        return false;
-      }
+      if (hasTerms) {
+        // lowercase once per file rather than once per term
+        const lowerFilename = filename.toLowerCase();
 
-      if (exclude.some((term) => filename.toLowerCase().includes(term)))
-        return false;
+        if (!includeTerms.every((term) => lowerFilename.includes(term)))
+          return false;
+        if (exclude.some((term) => lowerFilename.includes(term))) return false;
+      }
 
       return true;
     });
 
   const filteredFiles = filterFiles(files);
   const filteredLockedFiles = filterFiles(lockedFiles);
+
+  // nothing was filtered out and the counts already agree: return the original
+  // object so callers can skip re-rendering responses that didn't change
+  if (
+    filteredFiles.length === files.length &&
+    filteredLockedFiles.length === lockedFiles.length &&
+    response.files === files &&
+    response.lockedFiles === lockedFiles &&
+    response.fileCount === files.length &&
+    response.lockedFileCount === lockedFiles.length
+  ) {
+    return response;
+  }
 
   return {
     ...response,

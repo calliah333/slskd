@@ -6,7 +6,7 @@ import LoaderSegment from '../Shared/LoaderSegment';
 import PlaceholderSegment from '../Shared/PlaceholderSegment';
 import SearchDetail from './Detail/SearchDetail';
 import SearchList from './List/SearchList';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useHistory, useParams, useRouteMatch } from 'react-router-dom';
 import { toast } from 'react-toastify';
 import { Button, Icon, Input, Segment } from 'semantic-ui-react';
@@ -102,39 +102,45 @@ const Searches = ({ server } = {}) => {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // create a new search, and optionally navigate to it to display the details
-  // we do this if the user clicks the search icon, or repeats an existing search
-  const create = async ({ navigate = false, search } = {}) => {
-    const ref = inputRef?.current?.inputRef?.current;
-    const searchText = search || ref.value;
-    const id = uuidv4();
-
-    try {
-      setCreating(true);
-      await library.create({ id, searchText });
+  // we do this if the user clicks the search icon, or repeats an existing search.
+  // callbacks are stable so the memoized detail and list rows skip re-rendering
+  // on the ~4/s hub updates of other searches
+  const matchUrl = match.url;
+  const create = useCallback(
+    async ({ navigate = false, search } = {}) => {
+      const ref = inputRef?.current?.inputRef?.current;
+      const searchText = search || ref.value;
+      const id = uuidv4();
 
       try {
-        ref.value = '';
-        ref.focus();
-      } catch {
-        // we are probably repeating an existing search; the input isn't mounted.  no-op.
-      }
+        setCreating(true);
+        await library.create({ id, searchText });
 
-      setCreating(false);
+        try {
+          ref.value = '';
+          ref.focus();
+        } catch {
+          // we are probably repeating an existing search; the input isn't mounted.  no-op.
+        }
 
-      if (navigate) {
-        history.push(`${match.url.replace(`/${searchId}`, '')}/${id}`);
+        setCreating(false);
+
+        if (navigate) {
+          history.push(`${matchUrl.replace(`/${searchId}`, '')}/${id}`);
+        }
+      } catch (createError) {
+        console.error(createError);
+        toast.error(
+          createError?.response?.data ?? createError?.message ?? createError,
+        );
+        setCreating(false);
       }
-    } catch (createError) {
-      console.error(createError);
-      toast.error(
-        createError?.response?.data ?? createError?.message ?? createError,
-      );
-      setCreating(false);
-    }
-  };
+    },
+    [history, matchUrl, searchId],
+  );
 
   // delete a search
-  const remove = async (search) => {
+  const remove = useCallback(async (search) => {
     try {
       setRemoving(true);
 
@@ -152,10 +158,10 @@ const Searches = ({ server } = {}) => {
       );
       setRemoving(false);
     }
-  };
+  }, []);
 
   // stop an in-progress search
-  const stop = async (search) => {
+  const stop = useCallback(async (search) => {
     try {
       setStopping(true);
       await library.stop({ id: search.id });
@@ -169,7 +175,7 @@ const Searches = ({ server } = {}) => {
       );
       setStopping(false);
     }
-  };
+  }, []);
 
   if (connecting) {
     return <LoaderSegment />;

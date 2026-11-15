@@ -2,27 +2,38 @@ import * as transfers from '../../lib/transfers';
 import { getDirectoryContents } from '../../lib/users';
 import { formatBytes, getDirectoryName } from '../../lib/util';
 import FileList from '../Shared/FileList';
-import React, { Component } from 'react';
+import React, { PureComponent } from 'react';
 import { toast } from 'react-toastify';
 import { Button, Card, Icon, Label } from 'semantic-ui-react';
 
+// groups files by directory; push rather than concat so large directories
+// don't copy their file list once per file
 const buildTree = (response) => {
-  let { files = [] } = response;
-  const { lockedFiles = [] } = response;
-  files = files.concat(lockedFiles.map((file) => ({ ...file, locked: true })));
+  const { files = [], lockedFiles = [] } = response;
+  const tree = {};
 
-  return files.reduce((dict, file) => {
-    const directory = getDirectoryName(file.filename);
-    const selectable = { selected: false, ...file };
-    dict[directory] =
-      dict[directory] === undefined
-        ? [selectable]
-        : dict[directory].concat(selectable);
-    return dict;
-  }, {});
+  const add = (selectable) => {
+    const directory = getDirectoryName(selectable.filename);
+
+    if (tree[directory] === undefined) {
+      tree[directory] = [selectable];
+    } else {
+      tree[directory].push(selectable);
+    }
+  };
+
+  for (const file of files) {
+    add({ selected: false, ...file });
+  }
+
+  for (const file of lockedFiles) {
+    add({ selected: false, ...file, locked: true });
+  }
+
+  return tree;
 };
 
-class Response extends Component {
+class Response extends PureComponent {
   constructor(props) {
     super(props);
 
@@ -36,9 +47,12 @@ class Response extends Component {
   }
 
   componentDidUpdate(previousProps) {
+    // most updates hand down the very same response object; only fall back to
+    // a deep comparison (which preserves file selections) when it's a new one
     if (
+      this.props.response !== previousProps.response &&
       JSON.stringify(this.props.response) !==
-      JSON.stringify(previousProps.response)
+        JSON.stringify(previousProps.response)
     ) {
       this.setState({ tree: buildTree(this.props.response) });
     }
@@ -53,7 +67,8 @@ class Response extends Component {
     this.setState((previousState) => ({
       downloadError: '',
       downloadRequest: undefined,
-      tree: previousState.tree,
+      // a new object so PureComponent sees the (in-place) selection change
+      tree: { ...previousState.tree },
     }));
   };
 
@@ -143,8 +158,8 @@ class Response extends Component {
       tree,
     } = this.state;
 
-    const selectedFiles = Object.keys(tree)
-      .reduce((list, dict) => list.concat(tree[dict]), [])
+    const selectedFiles = Object.values(tree)
+      .flat()
       .filter((f) => f.selected);
 
     const selectedSize = formatBytes(
@@ -173,7 +188,7 @@ class Response extends Component {
               color="red"
               link
               name="close"
-              onClick={() => this.props.onHide()}
+              onClick={() => this.props.onHide(response.username)}
             />
           </Card.Header>
           <Card.Meta className="result-meta">

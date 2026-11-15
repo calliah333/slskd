@@ -1,5 +1,6 @@
 import { getCurrentDebugView } from '../../../lib/options';
-import { CodeEditor, PlaceholderSegment, Switch } from '../../Shared';
+import { PlaceholderSegment, Switch } from '../../Shared';
+import CodeEditor from '../../Shared/CodeEditor';
 import React, { useEffect, useState } from 'react';
 import { toast } from 'react-toastify';
 import { Button, Icon, Modal } from 'semantic-ui-react';

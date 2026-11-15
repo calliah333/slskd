@@ -54,6 +54,18 @@ export const formatDate = (date) => {
   return new Date(date).toLocaleString();
 };
 
+// constructing an Intl.DateTimeFormat is far more expensive than using one,
+// and chat/room histories format every message on each render
+const messageTimestampFormat = new Intl.DateTimeFormat('en', {
+  day: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit',
+  month: 'numeric',
+});
+
+export const formatMessageTimestamp = (timestamp) =>
+  messageTimestampFormat.format(new Date(timestamp));
+
 export const truncate = (text, maxLength) => {
   if (!text) return '';
   if (text.length <= maxLength) return text;

@@ -65,22 +65,41 @@ const findNodePath = (nodes, targetName) => {
   return null;
 };
 
+// pre-order list of nodes whose name matches, plus their ancestors. appends to
+// one array instead of spreading child results into each parent's, which
+// copied every match once per level of nesting
 const filterTree = (tree, query) => {
   const lower = query.toLowerCase();
+  const result = [];
 
   const visit = (node, depth) => {
-    const dirName = node.name.split(/[/\\]/u).pop();
-    const childResults = (node.children || []).flatMap((c) =>
-      visit(c, depth + 1),
-    );
-    if (dirName.toLowerCase().includes(lower) || childResults.length > 0) {
-      return [{ node, depth }, ...childResults];
+    const index = result.length;
+    result.push({ depth, node });
+
+    let descendantMatched = false;
+    for (const child of node.children || []) {
+      descendantMatched = visit(child, depth + 1) || descendantMatched;
     }
 
-    return [];
+    const { name } = node;
+    const dirName = name.slice(
+      Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\')) + 1,
+    );
+
+    if (descendantMatched || dirName.toLowerCase().includes(lower)) {
+      return true;
+    }
+
+    // nothing below matched either, so this node is the only entry added
+    result.length = index;
+    return false;
   };
 
-  return (tree || []).flatMap((root) => visit(root, 0));
+  for (const root of tree || []) {
+    visit(root, 0);
+  }
+
+  return result;
 };
 
 const loadHeight = () => {

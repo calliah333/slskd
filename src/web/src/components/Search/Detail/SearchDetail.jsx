@@ -9,7 +9,7 @@ import LoaderSegment from '../../Shared/LoaderSegment';
 import Switch from '../../Shared/Switch';
 import Response from '../Response';
 import SearchDetailHeader from './SearchDetailHeader';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button, Checkbox, Dropdown, Input, Segment } from 'semantic-ui-react';
 
 const sortDropdownOptions = [
@@ -50,6 +50,7 @@ const SearchDetail = ({
   const [hideNoFreeSlots, setHideNoFreeSlots] = useState(false);
   const [foldResults, setFoldResults] = useState(false);
   const [resultFilters, setResultFilters] = useState('');
+  const [appliedResultFilters, setAppliedResultFilters] = useState('');
   const [displayCount, setDisplayCount] = useState(5);
 
   // when the search transitions from !isComplete -> isComplete,
@@ -77,6 +78,13 @@ const SearchDetail = ({
     }
   }, [id, isComplete]);
 
+  // filtering re-scans every file of every response; wait for typing to
+  // pause instead of doing it on each keystroke
+  useEffect(() => {
+    const timer = setTimeout(() => setAppliedResultFilters(resultFilters), 200);
+    return () => clearTimeout(timer);
+  }, [resultFilters]);
+
   // apply sorting and filters.  this can take a while for larger result
   // sets, so memoize it.
   const sortedAndFilteredResults = useMemo(() => {
@@ -87,12 +95,19 @@ const SearchDetail = ({
 
     const { field, order } = sortOptions[resultSort];
 
-    const filters = parseFiltersFromString(resultFilters);
+    const filters = parseFiltersFromString(appliedResultFilters);
+    const hidden = new Set(hiddenResults);
 
     return results
-      .filter((r) => !hiddenResults.includes(r.username))
+      .filter((r) => !hidden.has(r.username))
+      .filter((r) => !(hideNoFreeSlots && !r.hasFreeUploadSlot))
       .map((r) => {
-        if (hideLocked) {
+        // keep the original object when there's nothing to strip, so
+        // unchanged responses keep their identity and skip re-rendering
+        if (
+          hideLocked &&
+          !(r.lockedFileCount === 0 && r.lockedFiles?.length === 0)
+        ) {
           return { ...r, lockedFileCount: 0, lockedFiles: [] };
         }
 
@@ -100,7 +115,6 @@ const SearchDetail = ({
       })
       .map((response) => filterResponse({ filters, response }))
       .filter((r) => r.fileCount + r.lockedFileCount > 0)
-      .filter((r) => !(hideNoFreeSlots && !r.hasFreeUploadSlot))
       .sort((a, b) => {
         if (order === 'asc') {
           return a[field] - b[field];
@@ -109,13 +123,18 @@ const SearchDetail = ({
         return b[field] - a[field];
       });
   }, [
+    appliedResultFilters,
     hiddenResults,
     hideLocked,
     hideNoFreeSlots,
-    resultFilters,
     resultSort,
     results,
   ]);
+
+  const hideResult = useCallback(
+    (username) => setHiddenResults((previous) => [...previous, username]),
+    [],
+  );
 
   // when a user uses the action buttons, we will *probably* re-use this component,
   // but with a new search ID.  clear everything to prepare for the transition
@@ -240,7 +259,7 @@ const SearchDetail = ({
               disabled={disabled}
               isInitiallyFolded={foldResults}
               key={r.username}
-              onHide={() => setHiddenResults([...hiddenResults, r.username])}
+              onHide={hideResult}
               response={r}
             />
           ))}
@@ -271,4 +290,5 @@ const SearchDetail = ({
   );
 };
 
-export default SearchDetail;
+// the parent re-renders on every hub update for any search (~4/s while one runs)
+export default React.memo(SearchDetail);

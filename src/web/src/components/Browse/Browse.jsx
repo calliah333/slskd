@@ -1,4 +1,5 @@
 import './Browse.css';
+import { poll } from '../../lib/polling';
 import * as users from '../../lib/users';
 import PlaceholderSegment from '../Shared/PlaceholderSegment';
 import DirectoryTree from './DirectoryTree';
@@ -57,7 +58,6 @@ const initialState = {
     lockedDirectories: 0,
     lockedFiles: 0,
   },
-  interval: undefined,
   selected: null,
   separator: '\\',
   tree: [],
@@ -70,16 +70,14 @@ class Browse extends Component {
 
     this.state = initialState;
     this.directoryTreeRef = React.createRef();
+    this.stopStatusPolling = undefined;
+    this.directoryIndex = { byName: new Map(), tree: undefined };
   }
 
   componentDidMount() {
-    this.fetchStatus();
     (async () => {
       await this.loadState();
-      this.setState(
-        { interval: window.setInterval(this.fetchStatus, 500) },
-        () => this.saveState(),
-      );
+      this.saveState();
     })();
 
     if (this.props.location.state?.user) {
@@ -90,14 +88,17 @@ class Browse extends Component {
   }
 
   componentWillUnmount() {
-    clearInterval(this.state.interval);
-    this.setState({ interval: undefined });
+    this.stopStatusPolling?.();
     document.removeEventListener('keyup', this.keyUp, false);
   }
 
   browse = async () => {
     const username = this.inputtext.inputRef.current.value;
     this.setState({ browseError: undefined, browseState: 'pending', username });
+
+    // progress is only meaningful while the browse is in flight
+    this.stopStatusPolling?.();
+    this.stopStatusPolling = poll(this.fetchStatus, 500, { immediate: false });
 
     try {
       const response = await users.browse({ username });
@@ -144,6 +145,9 @@ class Browse extends Component {
       });
     } catch (error) {
       this.setState({ browseError: error, browseState: 'error' });
+    } finally {
+      this.stopStatusPolling?.();
+      this.stopStatusPolling = undefined;
     }
   };
 
@@ -307,20 +311,31 @@ class Browse extends Component {
     return roots.map(buildNode);
   };
 
-  findDirectoryByPath = (path, nodes) => {
-    for (const node of nodes) {
-      if (node.name === path) {
-        return node;
+  // name -> node lookup, rebuilt only when the tree changes; render used to
+  // walk the whole tree to find the selected directory on every update
+  findDirectoryByPath = (path, tree) => {
+    if (this.directoryIndex.tree !== tree) {
+      const byName = new Map();
+      const stack = [...tree].reverse();
+
+      while (stack.length > 0) {
+        const node = stack.pop();
+
+        // the first match in depth-first order wins, as it did with the recursive search
+        if (!byName.has(node.name)) {
+          byName.set(node.name, node);
+        }
+
+        const children = node.children || [];
+        for (let index = children.length - 1; index >= 0; index--) {
+          stack.push(children[index]);
+        }
       }
 
-      const found = this.findDirectoryByPath(path, node.children || []);
-
-      if (found) {
-        return found;
-      }
+      this.directoryIndex = { byName, tree };
     }
 
-    return null;
+    return this.directoryIndex.byName.get(path) ?? null;
   };
 
   selectDirectory = (directory) => {

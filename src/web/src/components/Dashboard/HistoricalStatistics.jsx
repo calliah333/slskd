@@ -1,5 +1,6 @@
 import { formatBytes, formatSpeed, formatWait } from '../../lib/util';
-import { Graph, LoaderSegment } from '../Shared';
+import { LoaderSegment } from '../Shared';
+import Graph from '../Shared/Graph';
 import Leaderboard from './Leaderboard';
 import TopDirectories from './TopDirectories';
 import TransferErrors from './TransferErrors';

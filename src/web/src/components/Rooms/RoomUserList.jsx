@@ -56,4 +56,5 @@ const RoomUserList = ({ users }) => {
   );
 };
 
-export default RoomUserList;
+// re-renders only when the users array changes, not on every message poll
+export default React.memo(RoomUserList);

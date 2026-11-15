@@ -1,9 +1,5 @@
-import {
-  CodeEditor,
-  LoaderSegment,
-  ShrinkableButton,
-  Switch,
-} from '../../Shared';
+import { LoaderSegment, ShrinkableButton, Switch } from '../../Shared';
+import CodeEditor from '../../Shared/CodeEditor';
 import DebugModal from './DebugModal';
 import EditModal from './EditModal';
 import React, { useEffect, useState } from 'react';

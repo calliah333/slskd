@@ -1,6 +1,8 @@
 import './Chat.css';
 import { activeChatKey } from '../../config';
 import * as chat from '../../lib/chat';
+import { poll } from '../../lib/polling';
+import { formatMessageTimestamp } from '../../lib/util';
 import PlaceholderSegment from '../Shared/PlaceholderSegment';
 import ChatMenu from './ChatMenu';
 import React, { Component, createRef } from 'react';
@@ -18,7 +20,6 @@ import {
 const initialState = {
   active: '',
   conversations: {},
-  interval: undefined,
   loading: false,
   message: '',
 };
@@ -57,16 +58,13 @@ class Chat extends Component {
   }
 
   componentDidMount() {
+    this.stopPolling = poll(this.fetchConversations, 5_000, {
+      immediate: false,
+    });
+
     this.setState(
       {
         active: sessionStorage.getItem(activeChatKey) || '',
-        interval: window.setInterval(async () => {
-          try {
-            await this.fetchConversations();
-          } catch (error) {
-            console.error(error);
-          }
-        }, 5_000),
       },
       async () => {
         await this.fetchConversations();
@@ -78,8 +76,7 @@ class Chat extends Component {
   }
 
   componentWillUnmount() {
-    clearInterval(this.state.interval);
-    this.setState({ interval: undefined });
+    this.stopPolling();
   }
 
   listRef = createRef();
@@ -166,18 +163,6 @@ class Chat extends Component {
 
   focusInput = () => {
     this.messageRef.current.focus();
-  };
-
-  formatTimestamp = (timestamp) => {
-    const date = new Date(timestamp);
-    const dtfUS = new Intl.DateTimeFormat('en', {
-      day: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-      month: 'numeric',
-    });
-
-    return dtfUS.format(date);
   };
 
   selectConversation = (username) => {
@@ -296,7 +281,7 @@ class Chat extends Component {
                       <Ref innerRef={this.listRef}>
                         <List>
                           <ChatMessageHistory
-                            formatTimestamp={this.formatTimestamp}
+                            formatTimestamp={formatMessageTimestamp}
                             messages={messages}
                             selfUsername={user.username}
                           />
