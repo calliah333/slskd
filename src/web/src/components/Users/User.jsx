@@ -1,4 +1,4 @@
-import { Icon, Item } from 'semantic-ui-react';
+import { Icon, Item, Loader } from 'semantic-ui-react';
 
 const ImagePlaceholder = () => (
   <div className="users-picture-placeholder ui small image">
@@ -30,11 +30,51 @@ const FreeUploadSlot = ({ hasFreeUploadSlot }) => (
   />
 );
 
+const UserDetails = ({
+  address,
+  hasFreeUploadSlot,
+  infoError,
+  infoPending,
+  port,
+  queueLength,
+  uploadSlots,
+}) => {
+  const endpoint =
+    address === undefined ? '' : `, IP Address: ${address}, Port: ${port}`;
+
+  if (infoPending) {
+    return (
+      <>
+        <Loader
+          active
+          inline
+          size="mini"
+        />{' '}
+        Requesting info from the user{endpoint}
+      </>
+    );
+  }
+
+  if (infoError) {
+    return `Info unavailable${endpoint}`;
+  }
+
+  return (
+    <>
+      Free Upload Slot: <FreeUploadSlot hasFreeUploadSlot={hasFreeUploadSlot} />
+      , Total Upload Slots: {uploadSlots}, Queue Length: {queueLength}
+      {endpoint}
+    </>
+  );
+};
+
 const User = ({
   address,
   description,
   hasFreeUploadSlot,
   hasPicture,
+  infoError,
+  infoPending,
   picture,
   port,
   presence,
@@ -58,12 +98,23 @@ const User = ({
         {username}
       </Item.Header>
       <Item.Meta>
-        Free Upload Slot:{' '}
-        <FreeUploadSlot hasFreeUploadSlot={hasFreeUploadSlot} />, Total Upload
-        Slots: {uploadSlots}, Queue Length: {queueLength}, IP Address: {address}
-        , Port: {port}
+        <UserDetails
+          address={address}
+          hasFreeUploadSlot={hasFreeUploadSlot}
+          infoError={infoError}
+          infoPending={infoPending}
+          port={port}
+          queueLength={queueLength}
+          uploadSlots={uploadSlots}
+        />
       </Item.Meta>
-      <Item.Description>{description || 'No user info.'}</Item.Description>
+      <Item.Description>
+        {infoError
+          ? String(infoError)
+          : infoPending
+            ? ''
+            : description || 'No user info.'}
+      </Item.Description>
     </Item.Content>
   </Item>
 );
