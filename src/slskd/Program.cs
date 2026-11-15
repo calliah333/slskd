@@ -783,6 +783,7 @@ namespace slskd
             services.AddSingleton<WebhookService>();
 
             services.AddSingleton<IBrowseTracker, BrowseTracker>();
+            services.AddSingleton<IBrowseCache, BrowseCache>(_ => new BrowseCache());
             services.AddSingleton<IRoomTracker, RoomTracker>(_ => new RoomTracker(messageLimit: 250));
 
             services.AddSingleton<IMessagingService, MessagingService>();

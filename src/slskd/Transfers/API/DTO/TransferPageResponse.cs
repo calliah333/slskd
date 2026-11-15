@@ -30,7 +30,6 @@
 //   ╰───────────────────────────────────────────╶──── ─ ─── ─  ── ──┈  ┈
 // </copyright>
 
-
 namespace slskd.Transfers.API
 {
     using System.Collections.Generic;

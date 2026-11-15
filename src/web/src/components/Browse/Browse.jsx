@@ -9,11 +9,21 @@ import { withRouter } from 'react-router-dom';
 import { toast } from 'react-toastify';
 import { Card, Icon, Input, Loader, Segment } from 'semantic-ui-react';
 
+// v1 stored every file of the last browse, which could be hundreds of MB to
+// clone back in on every visit. v2 stores only directory metadata; the files
+// stay in the server's browse cache. drop v1 data without ever reading it
 const openBrowseDb = () =>
   new Promise((resolve, reject) => {
-    const req = indexedDB.open('slskd-browse', 1);
-    req.onupgradeneeded = ({ target }) =>
-      target.result.createObjectStore('browse');
+    const req = indexedDB.open('slskd-browse', 2);
+    req.onupgradeneeded = ({ target }) => {
+      const db = target.result;
+      if (db.objectStoreNames.contains('browse')) {
+        db.deleteObjectStore('browse');
+      }
+
+      db.createObjectStore('browse');
+    };
+
     req.onsuccess = ({ target }) => resolve(target.result);
     req.onerror = ({ target }) => reject(target.error);
   });
@@ -101,54 +111,60 @@ class Browse extends Component {
     this.stopStatusPolling = poll(this.fetchStatus, 500, { immediate: false });
 
     try {
-      const response = await users.browse({ username });
-      let { directories } = response;
-      const { lockedDirectories } = response;
+      // directory metadata only; files are fetched per directory on demand
+      // from the server's cached copy of this browse
+      const {
+        directories,
+        directoryCount,
+        fileCount,
+        lockedDirectoryCount,
+        lockedFileCount,
+      } = await users.browseDirectories({ username });
 
-      // detect the path separator from the first directory name we see
-      let separator;
-      const directoryCount = directories.length;
-      const fileCount = directories.reduce((accumulator, directory) => {
-        if (!separator) {
-          if (directory.name.includes('\\')) separator = '\\';
-          else if (directory.name.includes('/')) separator = '/';
+      // detect the path separator from the first directory name that has one
+      let separator = '\\';
+      for (const { name } of directories) {
+        if (name.includes('\\')) {
+          break;
         }
 
-        return accumulator + directory.fileCount;
-      }, 0);
+        if (name.includes('/')) {
+          separator = '/';
+          break;
+        }
+      }
 
-      const lockedDirectoryCount = lockedDirectories.length;
-      const lockedFileCount = lockedDirectories.reduce(
-        (accumulator, directory) => accumulator + directory.fileCount,
-        0,
-      );
-
-      directories = directories.concat(
-        lockedDirectories.map((d) => ({ ...d, locked: true })),
-      );
-
-      this.setState({
-        directories,
-        info: {
-          directories: directoryCount,
-          files: fileCount,
-          lockedDirectories: lockedDirectoryCount,
-          lockedFiles: lockedFileCount,
+      this.setState(
+        {
+          browseError: undefined,
+          browseState: 'complete',
+          directories,
+          info: {
+            directories: directoryCount,
+            files: fileCount,
+            lockedDirectories: lockedDirectoryCount,
+            lockedFiles: lockedFileCount,
+          },
+          separator,
+          tree: this.getDirectoryTree({ directories, separator }),
         },
-        separator,
-        tree: this.getDirectoryTree({ directories, separator }),
-      });
-
-      this.setState({ browseError: undefined, browseState: 'complete' }, () => {
-        this.saveState();
-        setTimeout(() => this.saveTree(), 0);
-      });
+        () => {
+          this.saveState();
+          setTimeout(() => this.saveTree(), 0);
+        },
+      );
     } catch (error) {
       this.setState({ browseError: error, browseState: 'error' });
     } finally {
       this.stopStatusPolling?.();
       this.stopStatusPolling = undefined;
     }
+  };
+
+  // the server no longer has this browse cached; fetch it from the peer again
+  handleBrowseAgain = () => {
+    this.inputtext.inputRef.current.value = this.state.username;
+    this.browse();
   };
 
   clear = () => {
@@ -223,25 +239,23 @@ class Browse extends Component {
 
       const saved = await idbGet('current');
 
-      if (!saved && !meta) {
+      // without saved directories there is nothing to show; leave the
+      // username in place so browsing again is one click
+      if (!saved) {
         this.setState({ browseLoading: false });
         return;
       }
 
-      const directories = saved?.directories ?? [];
-      const separator = saved?.separator ?? meta?.separator ?? '\\';
-      const tree = directories.length
-        ? this.getDirectoryTree({ directories, separator })
-        : [];
+      const { directories, info, separator, username } = saved;
 
       this.setState({
         ...meta,
-        ...(saved
-          ? { info: saved.info, separator, username: saved.username }
-          : {}),
         browseLoading: false,
         directories,
-        tree,
+        info,
+        separator,
+        tree: this.getDirectoryTree({ directories, separator }),
+        username,
       });
     } catch (error) {
       console.error(error);
@@ -264,51 +278,67 @@ class Browse extends Component {
     }
   };
 
+  // one node per directory, linked to its parent by name; directories whose
+  // parent isn't in the list are roots. O(N), and no node copies anything
+  // beyond the directory's own metadata
   getDirectoryTree = ({ directories, separator }) => {
-    if (!directories.length || directories[0].name === undefined) {
+    if (!directories?.length || directories[0].name === undefined) {
       return [];
     }
 
-    // group each directory under its parent path in a single O(N) pass
-    const byParent = new Map();
-    const nameSet = new Set();
+    const byName = new Map();
+    const nodes = directories.map(({ fileCount = 0, locked = false, name }) => {
+      const node = {
+        children: [],
+        fileCount,
+        locked,
+        name,
+        totalDirectoryCount: 0,
+        totalFileCount: fileCount,
+      };
 
-    for (const d of directories) {
-      nameSet.add(d.name);
-      const lastSep = d.name.lastIndexOf(separator);
-      const parentKey = lastSep === -1 ? '' : d.name.slice(0, lastSep);
-      let bucket = byParent.get(parentKey);
-      if (!bucket) {
-        bucket = [];
-        byParent.set(parentKey, bucket);
+      // the first directory with a given name wins, as in findDirectoryByPath
+      if (!byName.has(name)) {
+        byName.set(name, node);
       }
 
-      bucket.push(d);
-    }
-
-    // roots are directories whose parent path isn't itself in the list
-    const roots = directories.filter((d) => {
-      const lastSep = d.name.lastIndexOf(separator);
-      const parentKey = lastSep === -1 ? '' : d.name.slice(0, lastSep);
-      return !nameSet.has(parentKey);
+      return node;
     });
 
-    // recursively build the tree, computing file/directory counts along the way
-    const buildNode = (dir) => {
-      const children = (byParent.get(dir.name) || []).map(buildNode);
-      return {
-        ...dir,
-        children,
-        totalDirectoryCount:
-          children.length +
-          children.reduce((s, c) => s + c.totalDirectoryCount, 0),
-        totalFileCount:
-          (dir.files?.length ?? 0) +
-          children.reduce((s, c) => s + c.totalFileCount, 0),
-      };
-    };
+    const roots = [];
+    for (const node of nodes) {
+      const lastSep = node.name.lastIndexOf(separator);
+      const parent =
+        lastSep === -1 ? undefined : byName.get(node.name.slice(0, lastSep));
 
-    return roots.map(buildNode);
+      if (parent) {
+        parent.children.push(node);
+      } else {
+        roots.push(node);
+      }
+    }
+
+    // every node is listed before its descendants in a depth-first walk, so
+    // walking that order backwards totals each subtree bottom-up
+    const order = [];
+    const stack = [...roots];
+    while (stack.length > 0) {
+      const node = stack.pop();
+      order.push(node);
+      for (const child of node.children) {
+        stack.push(child);
+      }
+    }
+
+    for (let index = order.length - 1; index >= 0; index--) {
+      const node = order[index];
+      for (const child of node.children) {
+        node.totalDirectoryCount += 1 + child.totalDirectoryCount;
+        node.totalFileCount += child.totalFileCount;
+      }
+    }
+
+    return roots;
   };
 
   // name -> node lookup, rebuilt only when the tree changes; render used to
@@ -338,7 +368,9 @@ class Browse extends Component {
     return this.directoryIndex.byName.get(path) ?? null;
   };
 
-  selectDirectory = (directory) => {
+  // (event, node), as DirectoryTree calls it; a stable reference so the tree
+  // doesn't re-render because this component did
+  handleSelectDirectory = (_, directory) => {
     this.setState(
       {
         selected: {
@@ -440,7 +472,7 @@ class Browse extends Component {
             </Card.Meta>
             <div className="browse-tree-wrapper">
               <DirectoryTree
-                onSelect={(_, value) => this.selectDirectory(value)}
+                onSelect={this.handleSelectDirectory}
                 ref={this.directoryTreeRef}
                 selectedDirectoryName={selected?.directoryName}
                 tree={tree}
@@ -456,6 +488,7 @@ class Browse extends Component {
             locked={selectedDirectory.locked}
             name={selected.directoryName}
             node={selectedDirectory}
+            onBrowseAgain={this.handleBrowseAgain}
             onClose={this.handleDeselectDirectory}
             onStateChange={this.handleStateChange}
             separator={separator}

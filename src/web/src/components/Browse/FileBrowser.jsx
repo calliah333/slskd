@@ -4,8 +4,15 @@ import {
   formatSeconds,
   getFileName,
 } from '../../lib/util';
-import React, { useMemo, useState } from 'react';
-import { Checkbox, Header, Icon, Table } from 'semantic-ui-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  Button,
+  Checkbox,
+  Header,
+  Icon,
+  Loader,
+  Table,
+} from 'semantic-ui-react';
 
 const formatDirCaption = (fileCount, dirCount) => {
   const parts = [];
@@ -65,15 +72,48 @@ const getAttributes = (files) => {
   return '';
 };
 
-const File = ({ disabled, file, indent, locked, onSelectionChange }) => (
+// fetched file lists never change, so their totals are computed once
+const summaries = new WeakMap();
+
+const summarize = (files) => {
+  let summary = summaries.get(files);
+  if (!summary) {
+    let length = 0;
+    let size = 0;
+    for (const file of files) {
+      length += file.length || 0;
+      size += file.size || 0;
+    }
+
+    summary = { attributes: getAttributes(files), length, size };
+    summaries.set(files, summary);
+  }
+
+  return summary;
+};
+
+// size/attributes/length of everything beneath a directory, known only once
+// all of it has been fetched: a directory without subdirectories once its own
+// files are loaded, or any directory whose subtree was selected
+const getSummary = (dir, directoryFiles, subtreeFiles) => {
+  const files =
+    subtreeFiles.get(dir.name) ??
+    (dir.children.length === 0
+      ? directoryFiles.get(dir.name)?.files
+      : undefined);
+
+  return files ? summarize(files) : undefined;
+};
+
+const File = ({ checked, disabled, file, indent, locked, onToggle }) => (
   <Table.Row>
     <Table.Cell className="filelist-selector">
-      {onSelectionChange != null && (
+      {onToggle != null && (
         <Checkbox
-          checked={file.selected || false}
+          checked={checked}
           disabled={disabled}
           fitted
-          onChange={(_, data) => onSelectionChange(file, data.checked)}
+          onChange={(_, data) => onToggle(file, data.checked)}
         />
       )}
     </Table.Cell>
@@ -98,22 +138,101 @@ const File = ({ disabled, file, indent, locked, onSelectionChange }) => (
   </Table.Row>
 );
 
-// childFiles is pre-filtered by the caller; no filtering happens here
+// a placeholder while a directory's files are fetched, or a note about rows
+// that aren't shown
+const NoticeRow = ({ children, indent }) => (
+  <Table.Row>
+    <Table.Cell className="filelist-selector" />
+    <Table.Cell
+      className="filelist-filename"
+      colSpan={4}
+      style={indent ? { paddingLeft: '2em' } : undefined}
+    >
+      {children}
+    </Table.Cell>
+  </Table.Row>
+);
+
+// rows are rendered in pages; a directory with thousands of subdirectories or
+// files otherwise blocks the page while every row mounts
+const ROW_PAGE = 500;
+
+const ShowMoreRow = ({ indent, onShowMore, shown, total }) => (
+  <NoticeRow indent={indent}>
+    Showing {shown.toLocaleString()} of {total.toLocaleString()}{' '}
+    <Button
+      basic
+      compact
+      content="Show more"
+      onClick={onShowMore}
+      size="mini"
+    />
+  </NoticeRow>
+);
+
+// the first `limit` files directly in a directory, once fetched; selectable
+// only when onToggle is given
+const DirectoryFiles = ({
+  disabled,
+  entry,
+  indent,
+  limit,
+  locked,
+  onToggle,
+  selectedFiles,
+}) => {
+  if (entry === null) {
+    return (
+      <NoticeRow indent={indent}>
+        <Loader
+          active
+          inline
+          size="mini"
+        />{' '}
+        Loading files
+      </NoticeRow>
+    );
+  }
+
+  if (!entry) {
+    return null;
+  }
+
+  return (
+    <>
+      {entry.files.slice(0, limit).map((file) => (
+        <File
+          checked={selectedFiles?.has(file.filename) ?? false}
+          disabled={disabled}
+          file={file}
+          indent={indent}
+          key={file.filename}
+          locked={locked}
+          onToggle={onToggle}
+        />
+      ))}
+      {entry.truncated && limit >= entry.files.length && (
+        <NoticeRow indent={indent}>
+          Showing the first {entry.files.length.toLocaleString()} of{' '}
+          {entry.total.toLocaleString()} files
+        </NoticeRow>
+      )}
+    </>
+  );
+};
+
 const DirectoryRow = ({
-  childFiles,
+  checked,
   dir,
   directorySuffix,
   disabled,
   indent,
   isExpanded,
   onExpand,
-  onSelectionChange,
+  onToggle,
   sep,
+  summary,
 }) => {
-  const totalSize = childFiles.reduce((sum, f) => sum + (f.size || 0), 0);
-  const totalLength = childFiles.reduce((sum, f) => sum + (f.length || 0), 0);
-  const allChildSelected =
-    childFiles.length > 0 && childFiles.every((f) => f.selected);
   const dirName = dir.name.split(sep).pop();
   const interactive = onExpand != null;
   const folderIcon = indent
@@ -131,12 +250,12 @@ const DirectoryRow = ({
         className="filelist-selector"
         onClick={interactive ? (e) => e.stopPropagation() : undefined}
       >
-        {onSelectionChange != null && (
+        {onToggle != null && (
           <Checkbox
-            checked={allChildSelected}
-            disabled={disabled}
+            checked={checked}
+            disabled={disabled || dir.totalFileCount === 0}
             fitted
-            onChange={(_, data) => onSelectionChange(childFiles, data.checked)}
+            onChange={(_, data) => onToggle(dir, data.checked)}
           />
         )}
       </Table.Cell>
@@ -162,179 +281,139 @@ const DirectoryRow = ({
         )}
       </Table.Cell>
       <Table.Cell className="filelist-size">
-        {formatBytes(totalSize)}
+        {summary ? formatBytes(summary.size) : ''}
       </Table.Cell>
       <Table.Cell className="filelist-attributes">
-        {getAttributes(childFiles)}
+        {summary?.attributes ?? ''}
       </Table.Cell>
       <Table.Cell className="filelist-length">
-        {totalLength > 0 ? formatSeconds(totalLength) : ''}
+        {summary?.length > 0 ? formatSeconds(summary.length) : ''}
       </Table.Cell>
     </Table.Row>
   );
 };
 
-// childFiles contains all files in dir and its subdirs, pre-filtered by the parent
+// a subdirectory of the selected directory; when expanded, lists its own
+// subdirectories and the files directly inside it, fetched on demand
 const Directory = ({
-  childFiles,
+  checked,
   dir,
+  directoryFiles,
   directorySuffix,
   disabled,
   isExpanded,
   onExpand,
-  onSelectionChange,
+  onToggle,
   sep,
-}) => (
-  <>
-    <DirectoryRow
-      childFiles={childFiles}
-      dir={dir}
-      directorySuffix={directorySuffix}
-      disabled={disabled}
-      isExpanded={isExpanded}
-      onExpand={onExpand}
-      onSelectionChange={onSelectionChange}
-      sep={sep}
-    />
-    {isExpanded && (
-      <>
-        {(dir.children || []).map((subChild) => {
-          const subPrefix = subChild.name + sep;
-          const subChildFiles = childFiles.filter((f) =>
-            f.filename.startsWith(subPrefix),
-          );
-          return (
+  subtreeFiles,
+}) => {
+  const [rowLimit, setRowLimit] = useState(ROW_PAGE);
+  const entry = directoryFiles.get(dir.name);
+  const rowCount = dir.children.length + (entry?.files.length ?? 0);
+
+  return (
+    <>
+      <DirectoryRow
+        checked={checked}
+        dir={dir}
+        directorySuffix={directorySuffix}
+        disabled={disabled}
+        isExpanded={isExpanded}
+        onExpand={onExpand}
+        onToggle={onToggle}
+        sep={sep}
+        summary={getSummary(dir, directoryFiles, subtreeFiles)}
+      />
+      {isExpanded && (
+        <>
+          {dir.children.slice(0, rowLimit).map((subChild) => (
             <DirectoryRow
-              childFiles={subChildFiles}
               dir={subChild}
               directorySuffix={directorySuffix}
               indent
               key={subChild.name}
               sep={sep}
+              summary={getSummary(subChild, directoryFiles, subtreeFiles)}
             />
-          );
-        })}
-        {(dir.files || [])
-          .slice()
-          .sort((a, b) => a.filename.localeCompare(b.filename))
-          .map((f) => {
-            const fullFilename = `${dir.name}${sep}${f.filename}`;
-            return (
-              <File
-                file={{ ...f, filename: fullFilename }}
-                indent
-                key={fullFilename}
-              />
-            );
-          })}
-      </>
-    )}
-  </>
-);
+          ))}
+          <DirectoryFiles
+            entry={entry}
+            indent
+            limit={Math.max(0, rowLimit - dir.children.length)}
+          />
+          {rowCount > rowLimit && (
+            <ShowMoreRow
+              indent
+              onShowMore={() => setRowLimit(rowLimit + ROW_PAGE)}
+              shown={rowLimit}
+              total={rowCount}
+            />
+          )}
+        </>
+      )}
+    </>
+  );
+};
 
 const FileBrowser = ({
+  busy,
+  directoryFiles,
   directorySuffix,
   disabled,
   expandedDirectory,
-  files,
   locked,
+  notice,
   onClose,
+  onDirectoryToggle,
   onExpandedDirectoryChange,
-  onSelectionChange,
+  onFileToggle,
   rootDirectory,
+  selectedFiles,
   separator,
+  subtreeFiles,
 }) => {
   const [folded, setFolded] = useState(false);
-
-  // flatten the list of files that we've been given and turn it into a map
-  // keyed on the fully qualified name of the file and with a value of the file object
-  const fileMap = useMemo(() => {
-    const map = new Map();
-    for (const f of files || []) {
-      map.set(f.filename, f);
-    }
-
-    return map;
-  }, [files]);
+  const [rowLimit, setRowLimit] = useState(ROW_PAGE);
 
   const directoryName = rootDirectory?.name || '';
   const sep = separator || '\\';
+  const childDirs = rootDirectory?.children ?? [];
+  const totalFileCount = rootDirectory?.totalFileCount ?? 0;
+  const rootEntry = directoryFiles.get(directoryName);
+  const rowCount = childDirs.length + (rootEntry?.files.length ?? 0);
 
-  const filesInRoot = useMemo(
-    () =>
-      (rootDirectory?.files || [])
-        .map((f) => ({
-          ...f,
-          fullFilename: `${directoryName}${sep}${f.filename}`,
-        }))
-        .sort((a, b) => a.filename.localeCompare(b.filename)),
-    [directoryName, rootDirectory, sep],
-  );
+  useEffect(() => setRowLimit(ROW_PAGE), [directoryName]);
 
-  const childDirs = useMemo(
-    () => rootDirectory?.children || [],
-    [rootDirectory],
-  );
-
-  // Group all files by their direct child directory in a single O(N) pass,
-  // so each DirectoryRow receives a pre-filtered slice instead of scanning
-  // the full list itself (which would be O(N_dirs × N_files)).
-  const filesByDir = useMemo(() => {
-    if (!directoryName) return new Map();
-    const map = new Map();
-    const parentPrefix = directoryName + sep;
-    for (const f of files || []) {
-      const rest = f.filename.startsWith(parentPrefix)
-        ? f.filename.slice(parentPrefix.length)
-        : null;
-      if (rest === null) continue;
-      const sepIdx = rest.indexOf(sep);
-      if (sepIdx === -1) continue; // direct file in rootDirectory, not in a subdir
-      const childDirName = parentPrefix + rest.slice(0, sepIdx);
-      let group = map.get(childDirName);
-      if (!group) {
-        group = [];
-        map.set(childDirName, group);
+  // count selected files per child directory in one pass over the selection
+  // (at most MAX_SELECTED_FILES), so each child's checkbox is a lookup
+  const selectedByChild = useMemo(() => {
+    const counts = new Map();
+    const prefix = directoryName + sep;
+    for (const filename of selectedFiles.keys()) {
+      const index = filename.startsWith(prefix)
+        ? filename.indexOf(sep, prefix.length)
+        : -1;
+      if (index !== -1) {
+        const child = filename.slice(0, index);
+        counts.set(child, (counts.get(child) ?? 0) + 1);
       }
-
-      group.push(f);
     }
 
-    return map;
-  }, [directoryName, files, sep]);
+    return counts;
+  }, [directoryName, selectedFiles, sep]);
 
   const allSelected =
-    (files?.length ?? 0) > 0 && files.every((f) => f.selected);
+    totalFileCount > 0 && selectedFiles.size >= totalFileCount;
 
-  const handleSelectAll = (_, data) => {
-    onSelectionChange(data.checked ? (files || []).map((f) => f.filename) : []);
-  };
-
-  const handleFileToggle = (file, checked) => {
-    const result = [];
-    for (const f of files || []) {
-      if (f === file ? checked : f.selected) result.push(f.filename);
-    }
-
-    onSelectionChange(result);
-  };
-
-  const handleDirToggle = (childFiles, checked) => {
-    const childSet = new Set(childFiles.map((f) => f.filename));
-    const result = [];
-    for (const f of files || []) {
-      if (childSet.has(f.filename) ? checked : f.selected)
-        result.push(f.filename);
-    }
-
-    onSelectionChange(result);
-  };
+  const handleSelectAll = (_, data) =>
+    onDirectoryToggle(rootDirectory, data.checked);
 
   const handleExpandDirectory = (name) => {
     onExpandedDirectoryChange(expandedDirectory === name ? null : name);
   };
 
-  const hasContent = filesInRoot.length > 0 || childDirs.length > 0;
+  const hasContent =
+    (rootDirectory?.fileCount ?? 0) > 0 || childDirs.length > 0;
 
   return (
     <div className={locked ? 'filebrowser-locked' : undefined}>
@@ -350,6 +429,13 @@ const FileBrowser = ({
             size="large"
           />
           {directoryName}
+          {busy && (
+            <Loader
+              active
+              inline
+              size="mini"
+            />
+          )}
           {Boolean(onClose) && (
             <Icon
               className="close-button"
@@ -361,6 +447,7 @@ const FileBrowser = ({
           )}
         </div>
       </Header>
+      {notice}
       {!folded && hasContent && (
         <Table>
           <Table.Header>
@@ -368,7 +455,7 @@ const FileBrowser = ({
               <Table.HeaderCell className="filelist-selector">
                 <Checkbox
                   checked={allSelected}
-                  disabled={disabled}
+                  disabled={disabled || totalFileCount === 0}
                   fitted
                   onChange={handleSelectAll}
                 />
@@ -388,31 +475,39 @@ const FileBrowser = ({
             </Table.Row>
           </Table.Header>
           <Table.Body>
-            {childDirs.map((child) => (
+            {childDirs.slice(0, rowLimit).map((child) => (
               <Directory
-                childFiles={filesByDir.get(child.name) || []}
+                checked={
+                  child.totalFileCount > 0 &&
+                  (selectedByChild.get(child.name) ?? 0) >= child.totalFileCount
+                }
                 dir={child}
+                directoryFiles={directoryFiles}
                 directorySuffix={directorySuffix}
                 disabled={disabled}
                 isExpanded={expandedDirectory === child.name}
                 key={child.name}
                 onExpand={handleExpandDirectory}
-                onSelectionChange={handleDirToggle}
+                onToggle={onDirectoryToggle}
                 sep={sep}
+                subtreeFiles={subtreeFiles}
               />
             ))}
-            {filesInRoot.map((f) => {
-              const flatFile = fileMap.get(f.fullFilename);
-              return (
-                <File
-                  disabled={disabled}
-                  file={flatFile || f}
-                  key={f.fullFilename}
-                  locked={locked}
-                  onSelectionChange={flatFile ? handleFileToggle : undefined}
-                />
-              );
-            })}
+            <DirectoryFiles
+              disabled={disabled}
+              entry={rootEntry}
+              limit={Math.max(0, rowLimit - childDirs.length)}
+              locked={locked}
+              onToggle={onFileToggle}
+              selectedFiles={selectedFiles}
+            />
+            {rowCount > rowLimit && (
+              <ShowMoreRow
+                onShowMore={() => setRowLimit(rowLimit + ROW_PAGE)}
+                shown={rowLimit}
+                total={rowCount}
+              />
+            )}
           </Table.Body>
         </Table>
       )}

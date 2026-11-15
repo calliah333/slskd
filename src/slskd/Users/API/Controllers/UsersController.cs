@@ -34,8 +34,10 @@ using Microsoft.Extensions.Options;
 
 namespace slskd.Users.API
 {
+    using System;
     using System.Collections.Generic;
     using System.ComponentModel.DataAnnotations;
+    using System.Linq;
     using System.Net;
     using System.Threading.Tasks;
     using Asp.Versioning;
@@ -59,17 +61,20 @@ namespace slskd.Users.API
         /// </summary>
         /// <param name="soulseekClient"></param>
         /// <param name="browseTracker"></param>
+        /// <param name="browseCache"></param>
         /// <param name="userService"></param>
         /// <param name="optionsSnapshot"></param>
-        public UsersController(ISoulseekClient soulseekClient, IBrowseTracker browseTracker, IUserService userService, IOptionsSnapshot<Options> optionsSnapshot)
+        public UsersController(ISoulseekClient soulseekClient, IBrowseTracker browseTracker, IBrowseCache browseCache, IUserService userService, IOptionsSnapshot<Options> optionsSnapshot)
         {
             Client = soulseekClient;
             BrowseTracker = browseTracker;
+            BrowseCache = browseCache;
             Users = userService;
             OptionsSnapshot = optionsSnapshot;
         }
 
         private IBrowseTracker BrowseTracker { get; }
+        private IBrowseCache BrowseCache { get; }
         private ISoulseekClient Client { get; }
         private IUserService Users { get; }
         private IOptionsSnapshot<Options> OptionsSnapshot { get; }
@@ -139,12 +144,147 @@ namespace slskd.Users.API
                     BrowseTracker.TryRemove(username);
                 });
 
+                BrowseCache.AddOrUpdate(username, result);
+
                 return Ok(result);
             }
             catch (UserOfflineException ex)
             {
                 return NotFound(ex.Message);
             }
+        }
+
+        /// <summary>
+        ///     Browses the specified <paramref name="username"/>, caches the result, and retrieves the shared directories without files.
+        /// </summary>
+        /// <remarks>
+        ///     Files are retrieved from the cached result with <see cref="BrowseFiles"/>.
+        /// </remarks>
+        /// <param name="username">The username of the user.</param>
+        /// <returns></returns>
+        [HttpGet("{username}/browse/directories")]
+        [Authorize(Policy = AuthPolicy.Any, Roles = AuthRole.ReadWriteOrAdministrator)]
+        [ProducesResponseType(typeof(BrowseDirectoriesResponse), 200)]
+        [ProducesResponseType(404)]
+        public async Task<IActionResult> BrowseDirectories([FromRoute, UrlEncoded, Required] string username)
+        {
+            if (Program.IsRelayAgent)
+            {
+                return Forbid();
+            }
+
+            if (Users.IsBlacklisted(username))
+            {
+                return NotFound();
+            }
+
+            try
+            {
+                var result = await Client.BrowseAsync(username);
+
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(5000);
+                    BrowseTracker.TryRemove(username);
+                });
+
+                var entry = BrowseCache.AddOrUpdate(username, result);
+
+                return Ok(new BrowseDirectoriesResponse
+                {
+                    DirectoryCount = entry.DirectoryCount,
+                    FileCount = entry.FileCount,
+                    LockedDirectoryCount = entry.LockedDirectoryCount,
+                    LockedFileCount = entry.LockedFileCount,
+                    Directories = entry.Directories
+                        .Select(d => new BrowseDirectoryResponse { Name = d.Directory.Name, FileCount = d.Directory.FileCount, Locked = d.Locked })
+                        .ToList(),
+                });
+            }
+            catch (UserOfflineException ex)
+            {
+                return NotFound(ex.Message);
+            }
+        }
+
+        /// <summary>
+        ///     Retrieves the files in the specified directory, and optionally its descendants, from the cached result of the most
+        ///     recent browse of the specified <paramref name="username"/>.
+        /// </summary>
+        /// <remarks>
+        ///     Never contacts the user. Files are included in order until the limit is reached; directories after that point are omitted.
+        /// </remarks>
+        /// <param name="username">The username of the user.</param>
+        /// <param name="request">The files request.</param>
+        /// <returns></returns>
+        /// <response code="400">The directory is missing.</response>
+        /// <response code="404">The user has no cached browse result, or the directory is not in it; browse again.</response>
+        [HttpPost("{username}/browse/files")]
+        [Authorize(Policy = AuthPolicy.Any, Roles = AuthRole.ReadWriteOrAdministrator)]
+        [ProducesResponseType(typeof(BrowseFilesResponse), 200)]
+        [ProducesResponseType(400)]
+        [ProducesResponseType(404)]
+        public IActionResult BrowseFiles([FromRoute, UrlEncoded, Required] string username, [FromBody, Required] BrowseFilesRequest request)
+        {
+            if (Program.IsRelayAgent)
+            {
+                return Forbid();
+            }
+
+            if (request == null || string.IsNullOrEmpty(request.Directory))
+            {
+                return BadRequest();
+            }
+
+            if (Users.IsBlacklisted(username))
+            {
+                return NotFound();
+            }
+
+            if (!BrowseCache.TryGet(username, out var entry))
+            {
+                return NotFound($"No cached browse results for {username}; browse again");
+            }
+
+            // when recursive, a directory that is only implied by its descendants (not itself in the response) is still found
+            var matches = entry.Find(request.Directory, request.Recursive);
+
+            if (matches.Count == 0)
+            {
+                return NotFound("Directory not found");
+            }
+
+            var limit = Math.Clamp(request.Limit, 1, BrowseFilesRequest.MaxLimit);
+            var total = matches.Sum(d => d.Directory.FileCount);
+            var included = 0;
+            var directories = new List<BrowseDirectoryFilesResponse>(matches.Count);
+
+            foreach (var (directory, locked) in matches)
+            {
+                if (included == limit && included < total)
+                {
+                    break;
+                }
+
+                var take = Math.Min(directory.FileCount, limit - included);
+
+                directories.Add(new BrowseDirectoryFilesResponse
+                {
+                    Name = directory.Name,
+                    FileCount = directory.FileCount,
+                    Locked = locked,
+                    Files = take == directory.FileCount ? directory.Files : directory.Files.Take(take).ToList(),
+                });
+
+                included += take;
+            }
+
+            return Ok(new BrowseFilesResponse
+            {
+                Total = total,
+                Truncated = included < total,
+                Directories = directories,
+            });
         }
 
         /// <summary>

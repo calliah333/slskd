@@ -432,4 +432,5 @@ const DirectoryTree = forwardRef(
 
 DirectoryTree.displayName = 'DirectoryTree';
 
-export default DirectoryTree;
+// Browse re-renders on every selection change; the tree's props don't change
+export default React.memo(DirectoryTree);

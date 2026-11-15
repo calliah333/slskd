@@ -36,6 +36,13 @@
   margin-top: -20px;
 }
 
+.browse-cache-missing.ui.message {
+  align-items: center;
+  display: flex;
+  gap: 1em;
+  justify-content: space-between;
+}
+
 .browse-folderlist-controls {
   align-items: center;
   display: flex;
