@@ -637,6 +637,12 @@ namespace slskd
 
                     // note: if this ever throws, we've forgotten to register a Migrator following database DI config
                     app.Services.GetService<Migrator>().Migrate(force: OptionsAtStartup.Flags.ForceMigrations);
+
+                    // keep the query planner's statistics current (see DatabaseOptimizer). the first run analyzes
+                    // every table and can take a few seconds on large databases, so it mustn't delay startup
+                    var databases = app.Services.GetRequiredService<ConnectionStringDictionary>();
+                    _ = Task.Run(() => DatabaseOptimizer.Optimize(databases));
+                    Clock.EveryHour += (_, _) => Task.Run(() => DatabaseOptimizer.Optimize(databases));
                 }
 
                 // hack: services that exist only to subscribe to the event bus are not referenced by anything else

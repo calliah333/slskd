@@ -43,12 +43,16 @@ namespace slskd
     /// </summary>
     public class SqliteConnectionOpenedInterceptor : DbConnectionInterceptor
     {
+        // synchronous=NORMAL is durable enough in WAL mode and avoids an fsync per commit. temp_store=MEMORY keeps the
+        // temporary b-trees behind GROUP BY/ORDER BY/DISTINCT (counts by state, transfer summaries, reports) off disk.
+        private const string Pragmas = "PRAGMA synchronous=1; PRAGMA temp_store=2;";
+
         public override void ConnectionOpened(DbConnection connection, ConnectionEndEventData eventData)
         {
             if (connection is SqliteConnection)
             {
                 using var cmd = connection.CreateCommand();
-                cmd.CommandText = "PRAGMA synchronous=1;";
+                cmd.CommandText = Pragmas;
                 cmd.ExecuteNonQuery();
             }
 
@@ -60,7 +64,7 @@ namespace slskd
             if (connection is SqliteConnection)
             {
                 using var cmd = connection.CreateCommand();
-                cmd.CommandText = "PRAGMA synchronous=1;";
+                cmd.CommandText = Pragmas;
                 await cmd.ExecuteNonQueryAsync(cancellationToken);
             }
 
