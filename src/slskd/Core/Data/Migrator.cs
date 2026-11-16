@@ -71,6 +71,7 @@ public class Migrator
             { nameof(Z2026_11_15_TransferViewAndReportIndexesMigration), new Z2026_11_15_TransferViewAndReportIndexesMigration(connectionStrings: Databases) },
             { nameof(Z2026_11_15_PrivateMessageIndexesMigration), new Z2026_11_15_PrivateMessageIndexesMigration(connectionStrings: Databases) },
             { nameof(Z2026_11_15_SearchSummaryIndexMigration), new Z2026_11_15_SearchSummaryIndexMigration(connectionStrings: Databases) },
+            { nameof(Z2026_11_16_SearchResponsesTableMigration), new Z2026_11_16_SearchResponsesTableMigration(connectionStrings: Databases) },
             { nameof(Z2026_11_16_PartialReportsIndexMigration), new Z2026_11_16_PartialReportsIndexMigration(connectionStrings: Databases) },
             { nameof(Z2026_11_16_DropRedundantTransferIndexesMigration), new Z2026_11_16_DropRedundantTransferIndexesMigration(connectionStrings: Databases) },
         };

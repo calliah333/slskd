@@ -39,7 +39,6 @@ namespace slskd.Search
     using System.Collections.Generic;
     using System.Linq;
     using System.Linq.Expressions;
-    using System.Text.Json;
     using System.Threading;
     using System.Threading.Tasks;
     using Microsoft.AspNetCore.SignalR;
@@ -123,6 +122,15 @@ namespace slskd.Search
         /// <param name="id">The unique identifier of the search.</param>
         /// <returns>The responses, or null if no such search exists.</returns>
         Task<IReadOnlyList<Response>> GetResponsesAsync(Guid id);
+
+        /// <summary>
+        ///     Returns the page of the responses of the search matching the specified <paramref name="id"/> described by the
+        ///     specified <paramref name="query"/>; see <see cref="ResponsePaging.Page"/>.
+        /// </summary>
+        /// <param name="id">The unique identifier of the search.</param>
+        /// <param name="query">The query.</param>
+        /// <returns>The page, or null if no such search exists.</returns>
+        Task<ResponsePage> GetResponsePageAsync(Guid id, ResponseQuery query);
     }
 
     /// <summary>
@@ -179,8 +187,9 @@ namespace slskd.Search
         private ConcurrentDictionary<Guid, Search> ActiveSearches { get; } = new ConcurrentDictionary<Guid, Search>();
 
         /// <summary>
-        ///     Gets the cache of deserialized responses of completed searches, keyed by search id, so that paging through a
-        ///     search doesn't re-read and re-parse its responses for every page.
+        ///     Gets the cache of deserialized responses of completed searches, keyed by search id, so that filtering and paging
+        ///     through a search doesn't re-read and re-parse its responses for every page, and of the matching responses of
+        ///     searches too large for that, keyed by <see cref="MatchesKey"/>.
         /// </summary>
         private MemoryCache ResponseCache { get; } = new MemoryCache(new MemoryCacheOptions
         {
@@ -215,6 +224,7 @@ namespace slskd.Search
 
             async Task DoDeleteAsync(Search search)
             {
+                // the responses go with it (ON DELETE CASCADE)
                 using var context = ContextFactory.CreateDbContext();
                 await context.Searches.Where(s => s.Id == search.Id).ExecuteDeleteAsync();
 
@@ -240,16 +250,16 @@ namespace slskd.Search
 
             using var context = ContextFactory.CreateDbContext();
 
-            var selector = context.Searches
+            var search = await context.Searches
                 .AsNoTracking()
-                .Where(expression);
+                .Where(expression)
+                .FirstOrDefaultAsync();
 
-            if (!includeResponses)
+            if (search is not null && includeResponses)
             {
-                selector = selector.WithoutResponses();
+                search.Responses = await GetResponsesAsync(search.Id) ?? [];
             }
 
-            var search = await selector.FirstOrDefaultAsync();
             return WithLiveProgress(search);
         }
 
@@ -281,23 +291,30 @@ namespace slskd.Search
 
                 using var context = ContextFactory.CreateDbContext();
 
-                var record = await context.Searches
+                var state = await context.Searches
                     .AsNoTracking()
                     .Where(s => s.Id == id)
-                    .Select(s => new { s.State, s.ResponsesJson })
+                    .Select(s => (SearchStates?)s.State)
                     .FirstOrDefaultAsync();
 
-                if (record == null)
+                if (state is not SearchStates searchState)
                 {
                     return null;
                 }
 
-                IReadOnlyList<Response> responses = string.IsNullOrEmpty(record.ResponsesJson)
-                    ? []
-                    : JsonSerializer.Deserialize<List<Response>>(record.ResponsesJson) ?? [];
+                var responses = new List<Response>();
 
-                // responses are persisted together with the Completed state; anything earlier is a placeholder
-                if (record.State.HasFlag(SearchStates.Completed))
+                await foreach (var record in context.Responses
+                    .AsNoTracking()
+                    .Where(r => r.SearchId == id)
+                    .OrderBy(r => r.Ordinal)
+                    .AsAsyncEnumerable())
+                {
+                    responses.Add(record.ToResponse());
+                }
+
+                // responses are persisted together with the Completed state; anything earlier has none yet
+                if (searchState.HasFlag(SearchStates.Completed))
                 {
                     CacheResponses(id, responses, CacheItemPriority.Normal);
                 }
@@ -308,6 +325,131 @@ namespace slskd.Search
             {
                 ResponseCacheLoadLock.Release();
             }
+        }
+
+        /// <summary>
+        ///     Returns the page of the responses of the search matching the specified <paramref name="id"/> described by the
+        ///     specified <paramref name="query"/>; see <see cref="ResponsePaging.Page"/>.
+        /// </summary>
+        /// <remarks>
+        ///     <para>
+        ///         Searches whose responses fit in the cache are paged in memory. Otherwise, if the filter doesn't look at
+        ///         files, the database selects the page; if it does, the matching responses are found by streaming through
+        ///         the search's responses once, and remembered so that subsequent pages read only the responses in them.
+        ///     </para>
+        /// </remarks>
+        /// <param name="id">The unique identifier of the search.</param>
+        /// <param name="query">The query.</param>
+        /// <returns>The page, or null if no such search exists.</returns>
+        public async Task<ResponsePage> GetResponsePageAsync(Guid id, ResponseQuery query)
+        {
+            ArgumentNullException.ThrowIfNull(query);
+            ArgumentOutOfRangeException.ThrowIfNegative(query.Offset);
+            ArgumentOutOfRangeException.ThrowIfNegative(query.Limit);
+
+            if (ResponseCache.TryGetValue(id, out IReadOnlyList<Response> cached))
+            {
+                return ResponsePaging.Page(cached, query);
+            }
+
+            var filter = ResponseFilter.Parse(query.Filter);
+
+            using var context = ContextFactory.CreateDbContext();
+
+            var search = await context.Searches
+                .AsNoTracking()
+                .Where(s => s.Id == id)
+                .Select(s => new { s.State, s.Token, s.ResponseCount, s.FileCount, s.LockedFileCount })
+                .FirstOrDefaultAsync();
+
+            if (search is null)
+            {
+                return null;
+            }
+
+            // a filter on files has to look at every file; for searches small enough to be cached, parse them once
+            if (filter.ConstrainsFiles && (long)search.ResponseCount + search.FileCount + search.LockedFileCount <= ResponseCacheSizeLimit)
+            {
+                var responses = await GetResponsesAsync(id);
+                return responses is null ? null : ResponsePaging.Page(responses, query);
+            }
+
+            var records = context.Responses
+                .AsNoTracking()
+                .Where(r => r.SearchId == id);
+
+            var totalCount = await records.CountAsync();
+            var candidates = ResponsePaging.Select(records, query, filter);
+
+            if (!filter.ConstrainsFiles)
+            {
+                // the candidates are exactly the matches
+                var matchedCount = await candidates.CountAsync();
+
+                var page = await candidates
+                    .Skip(query.Offset)
+                    .Take(query.Limit)
+                    .ToListAsync();
+
+                return new ResponsePage
+                {
+                    TotalCount = totalCount,
+                    MatchedCount = matchedCount,
+                    Offset = query.Offset,
+                    Limit = query.Limit,
+                    Responses = page.Select(r => filter.Apply(r.ToResponse(), query.HideLocked)).ToList(),
+                };
+            }
+
+            var key = new MatchesKey(
+                SearchId: id,
+                Token: search.Token,
+                Filter: query.Filter,
+                SortBy: query.SortBy,
+                HideLocked: query.HideLocked,
+                HideNoFreeSlots: query.HideNoFreeSlots,
+                HiddenUsernames: string.Join('\n', ResponsePaging.GetHiddenUsernames(query)));
+
+            if (!ResponseCache.TryGetValue(key, out int[] matches))
+            {
+                var ordinals = new List<int>();
+
+                // one response at a time, so memory doesn't grow with the size of the search
+                await foreach (var record in candidates.AsAsyncEnumerable())
+                {
+                    if (filter.Matches(record.ToResponse(), query.HideLocked))
+                    {
+                        ordinals.Add(record.Ordinal);
+                    }
+                }
+
+                matches = ordinals.ToArray();
+
+                // responses are persisted together with the Completed state; anything earlier has none yet
+                if (search.State.HasFlag(SearchStates.Completed))
+                {
+                    ResponseCache.Set(key, matches, new MemoryCacheEntryOptions
+                    {
+                        Size = 1 + (matches.Length / 64), // 4 bytes per match, in units of roughly 300 bytes
+                        SlidingExpiration = ResponseCacheSlidingExpiration,
+                    });
+                }
+            }
+
+            var pageOrdinals = matches.Skip(query.Offset).Take(query.Limit).ToArray();
+
+            var pageRecords = await records
+                .Where(r => Enumerable.Contains(pageOrdinals, r.Ordinal))
+                .ToDictionaryAsync(r => r.Ordinal);
+
+            return new ResponsePage
+            {
+                TotalCount = totalCount,
+                MatchedCount = matches.Length,
+                Offset = query.Offset,
+                Limit = query.Limit,
+                Responses = pageOrdinals.Select(ordinal => filter.Apply(pageRecords[ordinal].ToResponse(), query.HideLocked)).ToList(),
+            };
         }
 
         /// <summary>
@@ -323,7 +465,6 @@ namespace slskd.Search
             var searches = await context.Searches
                 .AsNoTracking()
                 .Where(expression)
-                .WithoutResponses()
                 .ToListAsync();
 
             if (!ActiveSearches.IsEmpty)
@@ -499,9 +640,8 @@ namespace slskd.Search
                         var finalResponses = responses.Select(r => Response.FromSoulseekSearchResponse(r)).ToList();
 
                         search.EndedAt = DateTime.UtcNow;
-                        search.Responses = finalResponses;
 
-                        Update(search);
+                        Complete(search, finalResponses);
 
                         // whoever opens the search next (very likely the user who started it) won't need to re-read it
                         ResponseCache.Remove(id);
@@ -509,11 +649,10 @@ namespace slskd.Search
 
                         ActiveSearches.TryRemove(id, out _);
 
-                        // zero responses before broadcasting, as we don't want to blast this
-                        // data out over the SignalR socket
-                        await SearchHub.BroadcastUpdateAsync(search with { Responses = [] });
+                        // responses aren't part of the broadcast; they're fetched (in pages) when wanted
+                        await SearchHub.BroadcastUpdateAsync(search);
 
-                        Log.Debug("Search for '{Query}' finalized (id: {Id}): {Search}", query, id, search with { Responses = [] });
+                        Log.Debug("Search for '{Query}' finalized (id: {Id}): {Search}", query, id, search);
                         Log.Information("Search for '{Query}' completed with {Responses} responses", query, search.ResponseCount);
                     }
                     catch (Exception ex)
@@ -550,7 +689,7 @@ namespace slskd.Search
 
                     if (searchBroadcasted)
                     {
-                        await SearchHub.BroadcastUpdateAsync(search with { Responses = [] });
+                        await SearchHub.BroadcastUpdateAsync(search);
                     }
                 }
 
@@ -646,13 +785,32 @@ namespace slskd.Search
             });
         }
 
+        /// <summary>
+        ///     Persists the final state of the specified <paramref name="search"/> together with its <paramref name="responses"/>.
+        /// </summary>
+        /// <param name="search">The search.</param>
+        /// <param name="responses">The responses to the search, in order of arrival.</param>
+        private void Complete(Search search, IReadOnlyList<Response> responses)
+        {
+            using var context = ContextFactory.CreateDbContext();
+
+            // the states of all entities are set explicitly; there's nothing to detect, and a search can have many responses
+            context.ChangeTracker.AutoDetectChangesEnabled = false;
+
+            context.Update(search);
+            context.Responses.AddRange(responses.Select((response, ordinal) => ResponseRecord.FromResponse(search.Id, ordinal, response)));
+
+            // a single transaction, so nobody sees a completed search without its responses
+            context.SaveChanges();
+        }
+
         private void UpdateProgress(Search search)
         {
             var (id, responseCount, fileCount, lockedFileCount) = (search.Id, search.ResponseCount, search.FileCount, search.LockedFileCount);
 
             try
             {
-                // write only the counts; the full row (including the responses) is written when the search is finalized
+                // write only the counts, and don't overwrite anything a concurrent state change may have written
                 using var context = ContextFactory.CreateDbContext();
                 context.Searches
                     .Where(s => s.Id == id)
@@ -679,5 +837,24 @@ namespace slskd.Search
 
             return search;
         }
+
+        /// <summary>
+        ///     The key under which the ordinals of the responses to a search matching a query are cached.
+        /// </summary>
+        /// <param name="SearchId">The unique identifier of the search.</param>
+        /// <param name="Token">The token of the search, which tells apart searches that reuse an id after a deletion.</param>
+        /// <param name="Filter">The filter text.</param>
+        /// <param name="SortBy">The sort order.</param>
+        /// <param name="HideLocked">A value indicating whether locked files are hidden.</param>
+        /// <param name="HideNoFreeSlots">A value indicating whether users without free upload slots are hidden.</param>
+        /// <param name="HiddenUsernames">The hidden usernames, normalized and joined.</param>
+        private sealed record MatchesKey(
+            Guid SearchId,
+            int Token,
+            string Filter,
+            ResponseSortOrder SortBy,
+            bool HideLocked,
+            bool HideNoFreeSlots,
+            string HiddenUsernames);
     }
 }

@@ -192,5 +192,87 @@ namespace slskd.Search
                 Responses = page,
             };
         }
+
+        /// <summary>
+        ///     Selects the stored <paramref name="records"/> which may match the specified <paramref name="query"/>, in the
+        ///     order in which they are paged.
+        /// </summary>
+        /// <remarks>
+        ///     Applies every condition that doesn't depend on individual files, exactly as <see cref="Page"/> does: hidden
+        ///     users, free upload slots, <see cref="ResponseFilter.MinFilesInFolder"/>, and the need for at least one file.
+        ///     If the <paramref name="filter"/> doesn't <see cref="ResponseFilter.ConstrainsFiles">constrain files</see>,
+        ///     the selected records are exactly the matching responses. Ties are broken by order of arrival, which is what
+        ///     the stable sort of <see cref="Page"/> does.
+        /// </remarks>
+        /// <param name="records">The stored responses of a single search.</param>
+        /// <param name="query">The query.</param>
+        /// <param name="filter">The filter parsed from <see cref="ResponseQuery.Filter"/>.</param>
+        /// <returns>The selected records, in order.</returns>
+        public static IQueryable<ResponseRecord> Select(IQueryable<ResponseRecord> records, ResponseQuery query, ResponseFilter filter)
+        {
+            ArgumentNullException.ThrowIfNull(records);
+            ArgumentNullException.ThrowIfNull(query);
+            ArgumentNullException.ThrowIfNull(filter);
+
+            var hidden = GetHiddenUsernames(query);
+
+            if (hidden.Length > 0)
+            {
+                // SQL equality is binary, the same as the ordinal comparison of Page. NOT IN is never true for null
+                records = records.Where(r => r.Username == null || !Enumerable.Contains(hidden, r.Username));
+            }
+
+            if (query.HideNoFreeSlots)
+            {
+                records = records.Where(r => r.HasFreeUploadSlot);
+            }
+
+            var minFilesInFolder = filter.MinFilesInFolder;
+
+            // file lists are stored as null when empty
+            if (query.HideLocked)
+            {
+                records = records.Where(r => r.FilesJson != null);
+
+                if (minFilesInFolder > 0)
+                {
+                    records = records.Where(r => r.FileCount >= minFilesInFolder);
+                }
+            }
+            else
+            {
+                records = records.Where(r => r.FilesJson != null || r.LockedFilesJson != null);
+
+                if (minFilesInFolder > 0)
+                {
+                    records = records.Where(r => r.FileCount + r.LockedFileCount >= minFilesInFolder);
+                }
+            }
+
+            return query.SortBy == ResponseSortOrder.QueueLength
+                ? records.OrderBy(r => r.QueueLength).ThenBy(r => r.Ordinal)
+                : records.OrderByDescending(r => r.UploadSpeed).ThenBy(r => r.Ordinal);
+        }
+
+        /// <summary>
+        ///     Returns the distinct, non-null hidden usernames of the specified <paramref name="query"/>, in ordinal order.
+        /// </summary>
+        /// <param name="query">The query.</param>
+        /// <returns>The hidden usernames.</returns>
+        public static string[] GetHiddenUsernames(ResponseQuery query)
+        {
+            ArgumentNullException.ThrowIfNull(query);
+
+            if (query.HiddenUsernames is not { Count: > 0 })
+            {
+                return [];
+            }
+
+            return query.HiddenUsernames
+                .Where(username => username is not null)
+                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal)
+                .ToArray();
+        }
     }
 }

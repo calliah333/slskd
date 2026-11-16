@@ -177,6 +177,45 @@ public class ResponseFilterTests
     }
 
     [Fact]
+    public void No_Minimum_Does_Not_Exclude_Negative_Values()
+    {
+        var file = new File { BitRate = -1, BitDepth = -1, Size = -1, Length = -1 };
+
+        Assert.True(ResponseFilter.None.Matches(file));
+        Assert.True(ResponseFilter.Parse("minbr:0 minfif:2").Matches(file));
+        Assert.False(ResponseFilter.Parse("minbr:1").Matches(file));
+    }
+
+    [Theory]
+    [InlineData(null, false)]
+    [InlineData("", false)]
+    [InlineData(" ", false)]
+    [InlineData("minfif:8", false)]
+    [InlineData("minbr:0 unknown:1", false)]
+    [InlineData("foo", true)]
+    [InlineData("-foo", true)]
+    [InlineData("-", true)]
+    [InlineData("iscbr", true)]
+    [InlineData("isvbr", true)]
+    [InlineData("islossless", true)]
+    [InlineData("islossy", true)]
+    [InlineData("minbr:1", true)]
+    [InlineData("minbd:1", true)]
+    [InlineData("minfs:1", true)]
+    [InlineData("minlen:1", true)]
+    public void ConstrainsFiles_Tells_Whether_Any_File_Can_Be_Rejected(string text, bool expected)
+    {
+        var filter = ResponseFilter.Parse(text);
+
+        Assert.Equal(expected, filter.ConstrainsFiles);
+
+        if (!expected)
+        {
+            Assert.True(filter.Matches(new File { Filename = "x", BitRate = -5, BitDepth = 0, Size = long.MinValue, Length = -1, IsVariableBitRate = true }));
+        }
+    }
+
+    [Fact]
     public void Terms_Match_Filenames_Ignoring_Case()
     {
         var files = new[] { "/path/to/foo.mp3", "/path/to/bar.mp3", "/path/to/baz.mp3", "/path/to/qux.mp3", "/path/to/info.nfo", "/path/to/Folder.JPG" }

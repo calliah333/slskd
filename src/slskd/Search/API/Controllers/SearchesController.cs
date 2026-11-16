@@ -253,14 +253,7 @@ namespace slskd.Search.API
                 return BadRequest($"Limit must be between 1 and {MaxResponsePageLimit}");
             }
 
-            var responses = await Searches.GetResponsesAsync(id);
-
-            if (responses == null)
-            {
-                return NotFound();
-            }
-
-            var page = ResponsePaging.Page(responses, new ResponseQuery
+            var page = await Searches.GetResponsePageAsync(id, new ResponseQuery
             {
                 Filter = filter,
                 SortBy = sortBy,
@@ -270,6 +263,11 @@ namespace slskd.Search.API
                 Offset = offset,
                 Limit = limit,
             });
+
+            if (page == null)
+            {
+                return NotFound();
+            }
 
             return Ok(page);
         }

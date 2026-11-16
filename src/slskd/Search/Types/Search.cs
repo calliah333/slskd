@@ -36,8 +36,6 @@ namespace slskd.Search
     using System.Collections.Generic;
     using System.ComponentModel.DataAnnotations;
     using System.ComponentModel.DataAnnotations.Schema;
-    using System.Text.Json;
-    using System.Text.Json.Serialization;
     using Soulseek;
 
     public record Search
@@ -54,51 +52,18 @@ namespace slskd.Search
         public int LockedFileCount { get; set; }
         public int ResponseCount { get; set; }
 
-        [NotMapped]
-        public IEnumerable<Response> Responses { get; set; } = new List<Response>();
-
         /// <summary>
-        ///     Gets or sets the JSON representation of <see cref="Responses"/>, as stored in the database.
+        ///     Gets or sets the responses to the search.
         /// </summary>
         /// <remarks>
-        ///     EF Core reads this several times per save (snapshot, change detection, parameter), and the responses of a
-        ///     large search serialize to tens of megabytes, so the result is remembered for as long as <see cref="Responses"/>
-        ///     refers to the same collection. Assign a new collection rather than modifying the current one in place.
+        ///     Stored separately (see <see cref="ResponseRecord"/>) and only populated when explicitly requested.
         /// </remarks>
-        [JsonIgnore]
-        public string ResponsesJson
-        {
-            get
-            {
-                var responses = Responses;
-                var memo = serializedResponses;
-
-                if (memo is not null && ReferenceEquals(memo.Source, responses))
-                {
-                    return memo.Json;
-                }
-
-                var json = JsonSerializer.Serialize(responses);
-                serializedResponses = new SerializedResponses(responses, json);
-                return json;
-            }
-
-            set
-            {
-                var responses = JsonSerializer.Deserialize<List<Response>>(value);
-                Responses = responses;
-                serializedResponses = new SerializedResponses(responses, value);
-            }
-        }
+        [NotMapped]
+        public IEnumerable<Response> Responses { get; set; } = new List<Response>();
 
         public string SearchText { get; init; }
         public DateTime StartedAt { get; init; } = DateTime.Now;
         public SearchStates State { get; set; }
         public int Token { get; init; }
-
-        // a reference type, so that the source and its serialization are read and written together
-        private SerializedResponses serializedResponses;
-
-        private sealed record SerializedResponses(object Source, string Json);
     }
 }

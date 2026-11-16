@@ -44,6 +44,11 @@ namespace slskd.Search
 
         public DbSet<Search> Searches { get; set; }
 
+        /// <summary>
+        ///     Gets or sets the responses of completed searches; see <see cref="ResponseRecord"/>.
+        /// </summary>
+        public DbSet<ResponseRecord> Responses { get; set; }
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             modelBuilder
@@ -56,9 +61,8 @@ namespace slskd.Search
                 .Property(e => e.EndedAt)
                 .HasConversion(v => v, v => v.HasValue ? DateTime.SpecifyKind(v.Value, DateTimeKind.Utc) : null);
 
-            // covers every query that omits responses (see Extensions.WithoutResponses()): the search list, lookups by id,
-            // and pruning. most of these columns are stored after ResponsesJson, which for a completed search can span
-            // thousands of overflow pages that SQLite would otherwise have to walk to reach them
+            // covers every query of the Searches table: the search list, lookups by id, and pruning. responses used to be
+            // stored in this table (see Z2026_11_16_SearchResponsesTableMigration), and the index predates their move
             modelBuilder
                 .Entity<Search>()
                 .HasIndex(e => new
@@ -74,6 +78,20 @@ namespace slskd.Search
                     e.Token,
                 })
                 .HasDatabaseName("IDX_Searches_Summary");
+
+            // the key leads with SearchId, so it serves both the cascade on delete and reading the responses of a search,
+            // and rows are kept in order of arrival, which breaks ties in every sort order
+            modelBuilder
+                .Entity<ResponseRecord>(entity =>
+                {
+                    entity.ToTable("SearchResponses");
+                    entity.HasKey(e => new { e.SearchId, e.Ordinal });
+                    entity
+                        .HasOne<Search>()
+                        .WithMany()
+                        .HasForeignKey(e => e.SearchId)
+                        .OnDelete(DeleteBehavior.Cascade);
+                });
         }
     }
 }

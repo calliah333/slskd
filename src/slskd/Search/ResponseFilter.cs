@@ -43,6 +43,9 @@ namespace slskd.Search
     /// </summary>
     /// <remarks>
     ///     Missing (null) file attributes never fail a minimum check, matching the web UI, which receives them as undefined.
+    ///     A minimum of zero is no minimum at all, so files with nonsensical (negative) attributes aren't hidden by an empty
+    ///     filter; this is what allows responses to be selected without reading their files when
+    ///     <see cref="ConstrainsFiles"/> is false.
     /// </remarks>
     public sealed class ResponseFilter
     {
@@ -114,6 +117,22 @@ namespace slskd.Search
         ///     Gets the minimum length, in seconds.
         /// </summary>
         public long MinLength { get; init; }
+
+        /// <summary>
+        ///     Gets a value indicating whether this filter can reject a file; if not, a response matches if it has any files
+        ///     (subject to <see cref="MinFilesInFolder"/>).
+        /// </summary>
+        public bool ConstrainsFiles
+            => Include.Count > 0
+            || Exclude.Count > 0
+            || IsCBR
+            || IsVBR
+            || IsLossless
+            || IsLossy
+            || MinBitRate > 0
+            || MinBitDepth > 0
+            || MinFileSize > 0
+            || MinLength > 0;
 
         /// <summary>
         ///     Parses a filter from the specified <paramref name="text"/>.
@@ -251,7 +270,10 @@ namespace slskd.Search
             }
 
             // lifted comparisons are false when the attribute is missing, so missing attributes pass
-            if (file.BitRate < MinBitRate || file.BitDepth < MinBitDepth || file.Size < MinFileSize || file.Length < MinLength)
+            if ((MinBitRate > 0 && file.BitRate < MinBitRate)
+                || (MinBitDepth > 0 && file.BitDepth < MinBitDepth)
+                || (MinFileSize > 0 && file.Size < MinFileSize)
+                || (MinLength > 0 && file.Length < MinLength))
             {
                 return false;
             }

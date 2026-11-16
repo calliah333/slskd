@@ -33,7 +33,6 @@
 namespace slskd.Search
 {
     using System;
-    using System.Linq;
     using Soulseek;
 
     public static class Extensions
@@ -109,27 +108,6 @@ namespace slskd.Search
                 fileFilter: fileFilter,
                 stateChanged: options.StateChanged,
                 responseReceived: options.ResponseReceived);
-        }
-
-        /// <summary>
-        ///     Creates a projection over the specified <paramref name="query"/> which omits responses.
-        /// </summary>
-        /// <param name="query"></param>
-        /// <returns></returns>
-        public static IQueryable<Search> WithoutResponses(this IQueryable<Search> query)
-        {
-            return query.Select(s => new Search()
-            {
-                Id = s.Id,
-                StartedAt = s.StartedAt,
-                EndedAt = s.EndedAt,
-                FileCount = s.FileCount,
-                LockedFileCount = s.LockedFileCount,
-                ResponseCount = s.ResponseCount,
-                SearchText = s.SearchText,
-                State = s.State,
-                Token = s.Token,
-            });
         }
 
         public static Search WithSoulseekSearch(this Search search, Soulseek.Search s)
