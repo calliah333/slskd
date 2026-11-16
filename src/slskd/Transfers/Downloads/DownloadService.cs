@@ -1315,11 +1315,13 @@ namespace slskd.Transfers.Downloads
             var updateSyncRoot = new SemaphoreSlim(1, 1);
 
             var stateHistory = new List<TransferStates>();
-            DateTime lastReportedAverageSpeed = default;
 
             try
             {
-                using var rateLimiter = new RateLimiter(250, concurrencyLimit: 1, flushOnDispose: true);
+                // the web UI polls transfers from the database once per second, so persisting progress more often than
+                // that only adds write (and index) churn; the terminal state is always persisted separately, and pending
+                // progress is flushed when the limiter is disposed
+                using var rateLimiter = new RateLimiter(1000, concurrencyLimit: 1, flushOnDispose: true);
 
                 var topts = new TransferOptions(
                     stateChanged: (args) =>
@@ -1409,19 +1411,15 @@ namespace slskd.Transfers.Downloads
                                         .SetProperty(t => t.BytesTransferred, transfer.BytesTransferred)
                                         .SetProperty(t => t.AverageSpeed, transfer.AverageSpeed));
 
-                                    // progress is reported at 4x the speed (250ms) that the transfer's average speed is calculated (1000ms)
-                                    // the transfer's speed is also zero until it has enough data to compute the EMA, so throw both
-                                    // repeated and zero values out
-                                    var now = DateTime.UtcNow;
-
-                                    if (transfer.AverageSpeed > 0 && now >= lastReportedAverageSpeed.AddMilliseconds(1000))
+                                    // progress is persisted at the same interval (1000ms) that the transfer's average speed is
+                                    // calculated, so each persisted value is fresh. the speed is zero until there is enough data
+                                    // to compute the EMA, so throw zero values out
+                                    if (transfer.AverageSpeed > 0)
                                     {
                                         Telemetry.Metrics.Update(() =>
                                         {
                                             Telemetry.Metrics.Transfers.Downloads.InProgress.CurrentAverageSpeed.Update(transfer.AverageSpeed);
                                         }, cancellationToken);
-
-                                        lastReportedAverageSpeed = now;
                                     }
                                 }
                                 finally
