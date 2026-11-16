@@ -106,15 +106,19 @@ const initialState = {
   },
 };
 
-const Leaderboard = ({ downloads, end, start, uploads }) => {
+const Leaderboard = ({ downloads, end, loading = {}, start, uploads }) => {
   const [state, setState] = useState(initialState);
   const sortRef = useRef(null);
 
+  // the dashboard's rows arrive per direction and per range; any sort still in
+  // flight was made against older rows, so drop it along with its loading state
   useEffect(() => {
+    sortRef.current = null;
     setState((previous) => ({
       ...previous,
       sortBy: 'Count',
       rows: { upload: uploads, download: downloads },
+      loading: { upload: false, download: false },
     }));
   }, [downloads, uploads]);
 
@@ -173,7 +177,7 @@ const Leaderboard = ({ downloads, end, start, uploads }) => {
           <Icon name="download" /> Downloads
         </Header>
         <LeaderboardTable
-          loading={state.loading.download}
+          loading={loading.download || state.loading.download}
           onSort={onSort}
           rows={state.rows.download}
           sortBy={state.sortBy}
@@ -185,7 +189,7 @@ const Leaderboard = ({ downloads, end, start, uploads }) => {
           <Icon name="upload" /> Uploads
         </Header>
         <LeaderboardTable
-          loading={state.loading.upload}
+          loading={loading.upload || state.loading.upload}
           onSort={onSort}
           rows={state.rows.upload}
           sortBy={state.sortBy}

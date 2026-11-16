@@ -1,7 +1,7 @@
 import { formatBytes, formatSpeed, formatWait } from '../../lib/util';
-import { LoaderSegment } from '../Shared';
 import Graph from '../Shared/Graph';
 import Leaderboard from './Leaderboard';
+import SectionLoader, { GRAPH_HEIGHT } from './SectionLoader';
 import TopDirectories from './TopDirectories';
 import TransferErrors from './TransferErrors';
 import React, { useMemo } from 'react';
@@ -188,6 +188,7 @@ const HistoricalStatistics = ({
           <Leaderboard
             downloads={leaderboard.download}
             end={historyEnd}
+            loading={loading.leaderboard}
             start={historyStart}
             uploads={leaderboard.upload}
           />
@@ -198,7 +199,10 @@ const HistoricalStatistics = ({
       menuItem: { content: 'Content', icon: 'folder open', key: 'content' },
       render: () => (
         <Tab.Pane>
-          <TopDirectories rows={directories} />
+          <TopDirectories
+            loading={loading.directories}
+            rows={directories}
+          />
         </Tab.Pane>
       ),
     },
@@ -208,8 +212,10 @@ const HistoricalStatistics = ({
         <Tab.Pane>
           <TransferErrors
             chartData={chartData}
+            chartLoading={loading.histogram}
             download={exceptions.download}
             end={historyEnd}
+            loading={loading.exceptions}
             start={historyStart}
             upload={exceptions.upload}
           />
@@ -220,114 +226,117 @@ const HistoricalStatistics = ({
 
   return (
     <Segment>
-      {loading && <LoaderSegment />}
-      {!loading && (
-        <>
-          <div
-            style={{
-              alignItems: 'center',
-              display: 'flex',
-              justifyContent: 'space-between',
-              marginBottom: '1em',
-            }}
-          >
-            <Header
-              as="h4"
-              style={{ margin: 0 }}
+      <div
+        style={{
+          alignItems: 'center',
+          display: 'flex',
+          justifyContent: 'space-between',
+          marginBottom: '1em',
+        }}
+      >
+        <Header
+          as="h4"
+          style={{ margin: 0 }}
+        >
+          <Icon name="history" />
+          <Header.Content>History</Header.Content>
+        </Header>
+        <ButtonGroup size="mini">
+          {historyRanges.map(({ label }) => (
+            <Button
+              active={historyLabel === label}
+              key={label}
+              onClick={() => onHistoryRangeSelect(label)}
             >
-              <Icon name="history" />
-              <Header.Content>History</Header.Content>
-            </Header>
-            <ButtonGroup size="mini">
-              {historyRanges.map(({ label }) => (
-                <Button
-                  active={historyLabel === label}
-                  key={label}
-                  onClick={() => onHistoryRangeSelect(label)}
-                >
-                  {label}
-                </Button>
-              ))}
-            </ButtonGroup>
-          </div>
-          <Statistic.Group
-            size="small"
-            widths="four"
-          >
-            <Statistic color="blue">
-              <Statistic.Value>
-                <Icon
-                  name="arrow down"
-                  size="tiny"
-                  style={{ marginRight: '5px' }}
-                />
-                {formatBytesParts(sumBytes(summary.Download ?? {})).value}
-                <span style={{ color: '#999', fontSize: '0.5em' }}>
-                  {formatBytesParts(sumBytes(summary.Download ?? {})).unit}
-                </span>
-              </Statistic.Value>
-              <Statistic.Label>
-                Downloaded ·{' '}
-                {sumCounts(summary.Download ?? {}).toLocaleString()} files
-              </Statistic.Label>
-            </Statistic>
-            <Statistic color="green">
-              <Statistic.Value>
-                <Icon
-                  name="arrow up"
-                  size="tiny"
-                  style={{ marginRight: '5px' }}
-                />
-                {formatBytesParts(sumBytes(summary.Upload ?? {})).value}
-                <span style={{ color: '#999', fontSize: '0.5em' }}>
-                  {formatBytesParts(sumBytes(summary.Upload ?? {})).unit}
-                </span>
-              </Statistic.Value>
-              <Statistic.Label>
-                Uploaded · {sumCounts(summary.Upload ?? {}).toLocaleString()}{' '}
-                files
-              </Statistic.Label>
-            </Statistic>
-            <Statistic color={shareRatioColor}>
-              <Statistic.Value>
-                <Icon
-                  name="chart pie"
-                  size="mini"
-                  style={{ marginRight: '5px' }}
-                />
-                {shareRatio !== null ? shareRatio.toFixed(2) : '—'}
-              </Statistic.Value>
-              <Statistic.Label>Share ratio (↑/↓)</Statistic.Label>
-            </Statistic>
-            <Statistic>
-              <Statistic.Value>
-                <Icon
-                  name="user"
-                  size="mini"
-                  style={{ marginRight: '5px' }}
-                />
-                {(
-                  (summary.Upload?.Succeeded?.distinctUsers ?? 0) +
-                  (summary.Download?.Succeeded?.distinctUsers ?? 0)
-                ).toLocaleString()}
-              </Statistic.Value>
-              <Statistic.Label>Distinct peers</Statistic.Label>
-            </Statistic>
-          </Statistic.Group>
-          <div style={{ marginTop: '1.5em' }}>
-            <Graph
-              data={chartData}
-              defaultSeries={DEFAULT_HISTORY_SERIES}
-              series={HISTORY_SERIES}
-            />
-          </div>
-          <Tab
-            activeIndex={activeTab}
-            onTabChange={(_, { activeIndex }) => onTabChange(activeIndex)}
-            panes={historyPanes}
-          />
-        </>
+              {label}
+            </Button>
+          ))}
+        </ButtonGroup>
+      </div>
+      {loading.summary ? (
+        <SectionLoader height="5em" />
+      ) : (
+        <Statistic.Group
+          size="small"
+          widths="four"
+        >
+          <Statistic color="blue">
+            <Statistic.Value>
+              <Icon
+                name="arrow down"
+                size="tiny"
+                style={{ marginRight: '5px' }}
+              />
+              {formatBytesParts(sumBytes(summary.Download ?? {})).value}
+              <span style={{ color: '#999', fontSize: '0.5em' }}>
+                {formatBytesParts(sumBytes(summary.Download ?? {})).unit}
+              </span>
+            </Statistic.Value>
+            <Statistic.Label>
+              Downloaded · {sumCounts(summary.Download ?? {}).toLocaleString()}{' '}
+              files
+            </Statistic.Label>
+          </Statistic>
+          <Statistic color="green">
+            <Statistic.Value>
+              <Icon
+                name="arrow up"
+                size="tiny"
+                style={{ marginRight: '5px' }}
+              />
+              {formatBytesParts(sumBytes(summary.Upload ?? {})).value}
+              <span style={{ color: '#999', fontSize: '0.5em' }}>
+                {formatBytesParts(sumBytes(summary.Upload ?? {})).unit}
+              </span>
+            </Statistic.Value>
+            <Statistic.Label>
+              Uploaded · {sumCounts(summary.Upload ?? {}).toLocaleString()}{' '}
+              files
+            </Statistic.Label>
+          </Statistic>
+          <Statistic color={shareRatioColor}>
+            <Statistic.Value>
+              <Icon
+                name="chart pie"
+                size="mini"
+                style={{ marginRight: '5px' }}
+              />
+              {shareRatio !== null ? shareRatio.toFixed(2) : '—'}
+            </Statistic.Value>
+            <Statistic.Label>Share ratio (↑/↓)</Statistic.Label>
+          </Statistic>
+          <Statistic>
+            <Statistic.Value>
+              <Icon
+                name="user"
+                size="mini"
+                style={{ marginRight: '5px' }}
+              />
+              {(
+                (summary.Upload?.Succeeded?.distinctUsers ?? 0) +
+                (summary.Download?.Succeeded?.distinctUsers ?? 0)
+              ).toLocaleString()}
+            </Statistic.Value>
+            <Statistic.Label>Distinct peers</Statistic.Label>
+          </Statistic>
+        </Statistic.Group>
       )}
+      <div style={{ marginTop: '1.5em' }}>
+        {loading.histogram ? (
+          <SectionLoader height={GRAPH_HEIGHT} />
+        ) : (
+          <Graph
+            data={chartData}
+            defaultSeries={DEFAULT_HISTORY_SERIES}
+            series={HISTORY_SERIES}
+          />
+        )}
+      </div>
+      <Tab
+        activeIndex={activeTab}
+        onTabChange={(_, { activeIndex }) => onTabChange(activeIndex)}
+        panes={historyPanes}
+      />
     </Segment>
   );
 };

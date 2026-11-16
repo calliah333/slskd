@@ -1,5 +1,5 @@
 import React from 'react';
-import { Header, Icon, Table } from 'semantic-ui-react';
+import { Header, Icon, Loader, Table } from 'semantic-ui-react';
 
 const getLastTwoSegments = (path) => {
   if (!path) {
@@ -15,7 +15,7 @@ const getLastTwoSegments = (path) => {
   return parts.slice(-2).join('/');
 };
 
-const TopDirectories = ({ rows }) => (
+const TopDirectories = ({ loading, rows }) => (
   <>
     <Header size="small">
       <Icon name="folder open" /> Directories
@@ -38,7 +38,21 @@ const TopDirectories = ({ rows }) => (
         </Table.Row>
       </Table.Header>
       <Table.Body>
-        {(!rows || rows.length === 0) && (
+        {loading && (
+          <Table.Row>
+            <Table.Cell
+              colSpan={4}
+              textAlign="center"
+            >
+              <Loader
+                active
+                inline="centered"
+                size="small"
+              />
+            </Table.Cell>
+          </Table.Row>
+        )}
+        {!loading && (!rows || rows.length === 0) && (
           <Table.Row>
             <Table.Cell
               colSpan={4}
@@ -48,7 +62,8 @@ const TopDirectories = ({ rows }) => (
             </Table.Cell>
           </Table.Row>
         )}
-        {rows &&
+        {!loading &&
+          rows &&
           rows.map((row, index) => (
             <Table.Row key={row.directory}>
               <Table.Cell

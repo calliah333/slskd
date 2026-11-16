@@ -26,7 +26,14 @@ import AppFooter from './AppFooter';
 import LoginForm from './LoginForm';
 import ErrorSegment from './Shared/ErrorSegment';
 import LoaderSegment from './Shared/LoaderSegment';
-import React, { Component, lazy, Suspense, useEffect, useMemo } from 'react';
+import React, {
+  Component,
+  lazy,
+  Suspense,
+  useEffect,
+  useMemo,
+  useRef,
+} from 'react';
 import { Link, Redirect, Route, Switch, useLocation } from 'react-router-dom';
 import { ToastContainer } from 'react-toastify';
 import {
@@ -43,6 +50,9 @@ import {
 const initialState = {
   applicationOptions: {},
   applicationState: {},
+  // false until the application hub pushes its first state; the app renders
+  // before the hubs connect, so consumers that need the state wait on this
+  applicationStateReceived: false,
   error: false,
   initialized: false,
   login: {
@@ -76,7 +86,7 @@ const Transfers = lazy(routeLoaders.downloads);
 const Users = lazy(routeLoaders.users);
 
 // start fetching the current route's chunk right away so it downloads while
-// the session check and hub connections are in flight, instead of after them
+// the session check is in flight, instead of after it
 const preloadCurrentRoute = async () => {
   const segment = window.location.pathname.slice(urlBase.length).split('/')[1];
   const load = routeLoaders[segment] ?? routeLoaders.dashboard;
@@ -125,11 +135,25 @@ class RouteErrorBoundary extends Component {
 // memoized so the once-per-second transfer metrics update (and anything else in
 // App's state that routes don't consume) doesn't re-render the active page
 const AppRoutes = React.memo(
-  ({ applicationOptions, applicationState, isAgent, theme }) => {
+  ({
+    applicationOptions,
+    applicationState,
+    applicationStateReceived,
+    isAgent,
+    theme,
+  }) => {
     const { pathname } = useLocation();
+    // routes only mount once init() has validated the session (or the
+    // authorized application hub has reconnected), so the first check is redundant
+    const isInitialCheck = useRef(true);
 
     // verify the session on navigation; expired sessions are logged out
     useEffect(() => {
+      if (isInitialCheck.current) {
+        isInitialCheck.current = false;
+        return;
+      }
+
       const check = async () => {
         try {
           await session.check();
@@ -201,12 +225,17 @@ const AppRoutes = React.memo(
                 />
                 <Route
                   path={`${urlBase}/chat`}
-                  render={(props) => (
-                    <Chat
-                      {...props}
-                      state={applicationState}
-                    />
-                  )}
+                  render={(props) =>
+                    // Chat reads the logged in user from the application state
+                    applicationStateReceived ? (
+                      <Chat
+                        {...props}
+                        state={applicationState}
+                      />
+                    ) : (
+                      <LoaderSegment />
+                    )
+                  }
                 />
                 <Route
                   path={`${urlBase}/rooms`}
@@ -262,6 +291,7 @@ const AppRoutes = React.memo(
 AppRoutes.displayName = 'AppRoutes';
 
 const ModeSpecificConnectButton = ({
+  connecting,
   connectionWatchdog,
   controller = {},
   mode,
@@ -269,6 +299,28 @@ const ModeSpecificConnectButton = ({
   server,
   user,
 }) => {
+  // the application hub hasn't delivered the state yet, so neither the mode nor
+  // the server connection is known
+  if (connecting) {
+    return (
+      <Menu.Item>
+        <Icon.Group className="menu-icon-group">
+          <Icon
+            color="grey"
+            name="plug"
+          />
+          <Icon
+            className="menu-icon-no-shadow"
+            color="green"
+            corner="bottom right"
+            name="sync alternate loading"
+          />
+        </Icon.Group>
+        Connecting
+      </Menu.Item>
+    );
+  }
+
   if (mode === 'Agent') {
     const isConnected = controller?.state === 'Connected';
     const isTransitioning = ['Connecting', 'Reconnecting'].includes(
@@ -409,54 +461,14 @@ class App extends Component {
         }
 
         if (isSessionValid) {
-          const appHub = createApplicationHubConnection();
-
-          appHub.on('state', (state) => {
-            this.setState({ applicationState: state });
-          });
-
-          appHub.on('options', (options) => {
-            this.setState({ applicationOptions: options });
-          });
-
-          appHub.onreconnecting(() =>
-            this.setState({ error: true, retriesExhausted: false }),
-          );
-          appHub.onclose(() =>
-            this.setState({ error: true, retriesExhausted: true }),
-          );
-          appHub.onreconnected(() =>
-            this.setState({ error: false, retriesExhausted: false }),
-          );
-
-          const metricsHub = createMetricsHubConnection();
-
-          metricsHub.on('Update', (metrics) => {
-            this.setState({ transferMetrics: metrics });
-          });
-
-          // the hubs are independent; connect them concurrently
-          await Promise.all([
-            (async () => {
-              await this.hubConnections.appHub?.stop();
-              this.hubConnections.appHub = appHub;
-              await appHub.start();
-            })(),
-            (async () => {
-              await this.hubConnections.metricsHub?.stop();
-              this.hubConnections.metricsHub = metricsHub;
-              await metricsHub.start();
-            })(),
-          ]);
+          this.connectHubs();
         }
 
         const savedTheme = this.getSavedTheme();
-        if (savedTheme != null) {
-          this.setState({ theme: savedTheme });
-        }
 
         this.setState({
           error: false,
+          ...(savedTheme != null && { theme: savedTheme }),
         });
       } catch (error) {
         console.error(error);
@@ -465,6 +477,64 @@ class App extends Component {
         this.setState({ initialized: true });
       }
     });
+  };
+
+  // the hubs connect in the background so the app renders as soon as the session
+  // is known to be valid; hub-pushed state fills in when it arrives
+  connectHubs = () => {
+    const appHub = createApplicationHubConnection();
+    // a re-login replaces the hubs; events from (and the stop of) the previous
+    // connections must not flag the new ones as lost
+    const isCurrent = () => this.hubConnections.appHub === appHub;
+
+    appHub.on('state', (state) => {
+      this.setState({
+        applicationState: state,
+        applicationStateReceived: true,
+      });
+    });
+
+    appHub.on('options', (options) => {
+      this.setState({ applicationOptions: options });
+    });
+
+    appHub.onreconnecting(
+      () =>
+        isCurrent() && this.setState({ error: true, retriesExhausted: false }),
+    );
+    appHub.onclose(
+      () =>
+        isCurrent() && this.setState({ error: true, retriesExhausted: true }),
+    );
+    appHub.onreconnected(
+      () =>
+        isCurrent() && this.setState({ error: false, retriesExhausted: false }),
+    );
+
+    const metricsHub = createMetricsHubConnection();
+
+    metricsHub.on('Update', (metrics) => {
+      this.setState({ transferMetrics: metrics });
+    });
+
+    const previous = this.hubConnections;
+    this.hubConnections = { appHub, metricsHub };
+
+    // the hubs are independent; connect them concurrently
+    const startHub = async (hub, previousHub) => {
+      try {
+        await previousHub?.stop();
+        await hub.start();
+      } catch (error) {
+        if (isCurrent()) {
+          console.error(error);
+          this.setState({ error: true, retriesExhausted: true });
+        }
+      }
+    };
+
+    startHub(appHub, previous.appHub);
+    startHub(metricsHub, previous.metricsHub);
   };
 
   getSavedTheme = () => {
@@ -515,6 +585,7 @@ class App extends Component {
     const {
       applicationOptions = {},
       applicationState = {},
+      applicationStateReceived,
       error,
       initialized,
       login,
@@ -678,6 +749,7 @@ class App extends Component {
                 Theme
               </Menu.Item>
               <ModeSpecificConnectButton
+                connecting={!applicationStateReceived}
                 connectionWatchdog={connectionWatchdog}
                 controller={controller}
                 mode={mode}
@@ -776,6 +848,7 @@ class App extends Component {
               <AppRoutes
                 applicationOptions={applicationOptions}
                 applicationState={applicationState}
+                applicationStateReceived={applicationStateReceived}
                 isAgent={isAgent}
                 theme={theme}
               />

@@ -2,6 +2,7 @@ import * as reports from '../../lib/reports';
 import Graph from '../Shared/Graph';
 import ExceptionList from './ExceptionList';
 import ExceptionPareto from './ExceptionPareto';
+import SectionLoader, { GRAPH_HEIGHT } from './SectionLoader';
 import React, { useEffect, useMemo, useState } from 'react';
 import { Header, Icon } from 'semantic-ui-react';
 
@@ -42,7 +43,15 @@ const DEFAULT_ERRORS_SERIES = new Set(['uploadErrors', 'downloadErrors']);
 
 const RECENT_PAGE_SIZE = 10;
 
-const TransferErrors = ({ chartData, download, end, start, upload }) => {
+const TransferErrors = ({
+  chartData,
+  chartLoading,
+  download,
+  end,
+  loading = {},
+  start,
+  upload,
+}) => {
   const [paretoDirection, setParetoDirection] = useState('All');
   const [paretoRows, setParetoRows] = useState(null);
   const [paretoLoading, setParetoLoading] = useState(false);
@@ -143,20 +152,24 @@ const TransferErrors = ({ chartData, download, end, start, upload }) => {
       <Header size="small">
         <Icon name="history" /> Errors
       </Header>
-      <Graph
-        data={chartData ?? []}
-        defaultSeries={DEFAULT_ERRORS_SERIES}
-        series={ERRORS_SERIES}
-      />
+      {chartLoading ? (
+        <SectionLoader height={GRAPH_HEIGHT} />
+      ) : (
+        <Graph
+          data={chartData ?? []}
+          defaultSeries={DEFAULT_ERRORS_SERIES}
+          series={ERRORS_SERIES}
+        />
+      )}
       <ExceptionPareto
         direction={paretoDirection}
-        loading={paretoLoading}
+        loading={loading.pareto || paretoLoading}
         onDirectionChange={onParetoDirectionChange}
         rows={displayedParetoRows}
       />
       <ExceptionList
         direction={recentDirection}
-        loading={recentLoading}
+        loading={loading.recent || recentLoading}
         onDirectionChange={onRecentDirectionChange}
         rows={displayedRecentRows}
       />
