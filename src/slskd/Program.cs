@@ -854,7 +854,7 @@ namespace slskd
                 .AllowAnyHeader()
                 .AllowAnyMethod()
                 .AllowCredentials()
-                .WithExposedHeaders("X-URL-Base", "X-Total-Count")));
+                .WithExposedHeaders("X-URL-Base", "X-Total-Count", "ETag")));
 
             // the web UI polls JSON (a page of transfers is ~250KB) every second and loads ~1MB of JS/CSS; both compress
             // ~10x. Fastest levels keep the CPU cost of compressing every poll negligible

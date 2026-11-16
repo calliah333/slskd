@@ -1,51 +1,43 @@
 import api from './api';
+import { getIfChanged } from './conditional';
 
-export const getAvailable = async () => {
-  const response = (await api.get('/rooms/available')).data;
-
+const toArray = (response) => {
   if (!Array.isArray(response)) {
     console.warn('got non-array response from rooms API', response);
     return undefined;
   }
 
   return response;
+};
+
+export const getAvailable = async () => {
+  return toArray((await api.get('/rooms/available')).data);
 };
 
 export const getJoined = async () => {
-  const response = (await api.get('/rooms/joined')).data;
-
-  if (!Array.isArray(response)) {
-    console.warn('got non-array response from rooms API', response);
-    return undefined;
-  }
-
-  return response;
+  return toArray((await api.get('/rooms/joined')).data);
 };
 
-export const getMessages = async ({ roomName }) => {
-  const response = (
-    await api.get(`/rooms/joined/${encodeURIComponent(roomName)}/messages`)
-  ).data;
+// fetches `url` unless unchanged since the response that carried `etag`;
+// resolves to { changed, data, etag } (see getIfChanged)
+const getArrayIfChanged = async (url, etag) => {
+  const result = await getIfChanged(url, etag);
 
-  if (!Array.isArray(response)) {
-    console.warn('got non-array response from rooms API', response);
-    return undefined;
-  }
-
-  return response;
+  return result.changed ? { ...result, data: toArray(result.data) } : result;
 };
 
-export const getUsers = async ({ roomName }) => {
-  const response = (
-    await api.get(`/rooms/joined/${encodeURIComponent(roomName)}/users`)
-  ).data;
+export const getMessages = ({ roomName, etag }) => {
+  return getArrayIfChanged(
+    `/rooms/joined/${encodeURIComponent(roomName)}/messages`,
+    etag,
+  );
+};
 
-  if (!Array.isArray(response)) {
-    console.warn('got non-array response from rooms API', response);
-    return undefined;
-  }
-
-  return response;
+export const getUsers = ({ roomName, etag }) => {
+  return getArrayIfChanged(
+    `/rooms/joined/${encodeURIComponent(roomName)}/users`,
+    etag,
+  );
 };
 
 export const join = async ({ roomName }) => {

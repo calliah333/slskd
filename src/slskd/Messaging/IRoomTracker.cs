@@ -33,6 +33,7 @@
 namespace slskd.Messaging
 {
     using System.Collections.Concurrent;
+    using System.Collections.Generic;
     using Soulseek;
 
     /// <summary>
@@ -73,6 +74,26 @@ namespace slskd.Messaging
         /// <param name="room"></param>
         /// <returns></returns>
         bool TryGet(string roomName, out Room room);
+
+        /// <summary>
+        ///     Returns the current list of messages for the specified <paramref name="roomName"/> and its revision, if
+        ///     the room is tracked.
+        /// </summary>
+        /// <param name="roomName"></param>
+        /// <param name="messages">The current (immutable) list of messages.</param>
+        /// <param name="revision">The revision of <paramref name="messages"/>.</param>
+        /// <returns>A value indicating whether the room is tracked.</returns>
+        bool TryGetMessages(string roomName, out IList<RoomMessage> messages, out long revision);
+
+        /// <summary>
+        ///     Returns the current list of users for the specified <paramref name="roomName"/> and its revision, if the
+        ///     room is tracked.
+        /// </summary>
+        /// <param name="roomName"></param>
+        /// <param name="users">The current (immutable) list of users.</param>
+        /// <param name="revision">The revision of <paramref name="users"/>.</param>
+        /// <returns>A value indicating whether the room is tracked.</returns>
+        bool TryGetUsers(string roomName, out IList<UserData> users, out long revision);
 
         /// <summary>
         ///     Removes a tracked room.

@@ -1,11 +1,15 @@
 import api from './api';
+import { getIfChanged } from './conditional';
 
 export const getAll = async () => {
   return (await api.get('/conversations')).data;
 };
 
-export const get = async ({ username }) => {
-  return (await api.get(`/conversations/${encodeURIComponent(username)}`)).data;
+// the conversation (including its most recent messages), unless it is unchanged
+// since the response that carried `etag`; resolves to { changed, data, etag }
+// (see getIfChanged)
+export const get = ({ username, etag }) => {
+  return getIfChanged(`/conversations/${encodeURIComponent(username)}`, etag);
 };
 
 export const acknowledge = ({ username }) => {

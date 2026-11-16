@@ -37,8 +37,9 @@ const initialState = {
   },
 };
 
-// rooms are polled every second; remembering each fetched array's JSON lets
-// an identical poll result be detected with one stringify instead of two
+// polls that do return data (a changed revision, or a server that doesn't send
+// ETags) usually still hold mostly the same content; remembering each fetched
+// array's JSON lets an identical result be detected with one stringify, not two
 const jsonCache = new WeakMap();
 
 const toJson = (value) => {
@@ -94,9 +95,16 @@ class Rooms extends Component {
   }
 
   componentDidMount() {
+    // messages and users are fetched conditionally (ETag/If-None-Match), so an
+    // unchanged list costs an empty 304. messages are polled often so they show
+    // up promptly; user lists can hold thousands of entries that change all the
+    // time in busy rooms, so they're refreshed far less often. the joined list
+    // only changes outside of this page's own join/leave (which refetch it
+    // themselves) when the server kicks us or we rejoin after a reconnect
     this.stopPolling = [
-      poll(this.fetchActiveRoom, 1_000, { immediate: false }),
-      poll(this.fetchJoinedRooms, 500, { immediate: false }),
+      poll(this.fetchActiveRoomMessages, 1_000, { immediate: false }),
+      poll(this.fetchActiveRoomUsers, 10_000, { immediate: false }),
+      poll(this.fetchJoinedRooms, 5_000, { immediate: false }),
     ];
 
     this.setState(
@@ -123,6 +131,9 @@ class Rooms extends Component {
 
   messageRef = undefined;
 
+  // ETags of the active room's last fetched messages and users
+  etags = {};
+
   getFirstRoom = () => {
     return this.state.joined.length > 0 ? this.state.joined[0] : '';
   };
@@ -144,31 +155,42 @@ class Rooms extends Component {
     );
   };
 
-  fetchActiveRoom = async () => {
+  // stores `data` as the active room's `key` (messages or users), keeping the
+  // previous array (and so skipping a re-render) if the content is the same
+  setActiveRoomList = (key, data) => {
+    this.setState(({ room }) => {
+      const next = keepIfUnchanged(room[key], data);
+      return next === room[key] ? null : { room: { ...room, [key]: next } };
+    });
+  };
+
+  // fetches the active room's `key` list unless it's unchanged since last time
+  fetchActiveRoomList = async (key, fetch) => {
     const { active } = this.state;
 
     if (active.length === 0) return;
 
-    const [messages, users] = await Promise.all([
-      rooms.getMessages({ roomName: active }),
-      rooms.getUsers({ roomName: active }),
-    ]);
-
-    // keep unchanged arrays so the memoized history and user list (which can
-    // hold thousands of users) only re-render when their own data changes
-    this.setState(({ room }) => {
-      const next = {
-        messages: keepIfUnchanged(room.messages, messages),
-        users: keepIfUnchanged(room.users, users),
-      };
-
-      return next.messages === room.messages && next.users === room.users
-        ? null
-        : { room: next };
+    const { changed, data, etag } = await fetch({
+      etag: this.etags[key],
+      roomName: active,
     });
+
+    // a different room was selected while this was in flight
+    if (active !== this.state.active || !changed || data === undefined) return;
+
+    this.etags[key] = etag;
+    this.setActiveRoomList(key, data);
   };
 
+  fetchActiveRoomMessages = () =>
+    this.fetchActiveRoomList('messages', rooms.getMessages);
+
+  fetchActiveRoomUsers = () =>
+    this.fetchActiveRoomList('users', rooms.getUsers);
+
   selectRoom = async (roomName) => {
+    this.etags = {};
+
     this.setState(
       (previousState) => ({
         active: roomName,
@@ -181,7 +203,10 @@ class Rooms extends Component {
 
         sessionStorage.setItem(activeRoomKey, active);
 
-        await this.fetchActiveRoom();
+        await Promise.all([
+          this.fetchActiveRoomMessages(),
+          this.fetchActiveRoomUsers(),
+        ]);
         this.setState({ loading: false }, () => {
           try {
             this.listRef.current.lastChild.scrollIntoView();

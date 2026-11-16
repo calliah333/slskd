@@ -32,14 +32,19 @@
 
 namespace slskd.Messaging
 {
+    using System;
     using System.Collections.Concurrent;
     using System.Collections.Generic;
-    using System.Linq;
     using Soulseek;
 
     /// <summary>
     ///     Tracks rooms.
     /// </summary>
+    /// <remarks>
+    ///     Room user and message lists are copy-on-write: every change publishes a new list together with a new revision
+    ///     (under a per-room lock), so readers can enumerate a list while it is being changed and can tell whether it
+    ///     changed since they last read it.
+    /// </remarks>
     public class RoomTracker : IRoomTracker
     {
         /// <summary>
@@ -65,16 +70,24 @@ namespace slskd.Messaging
         /// <param name="message"></param>
         public void AddOrUpdateMessage(string roomName, RoomMessage message)
         {
-            Rooms.AddOrUpdate(roomName, new Room() { Messages = new List<RoomMessage>() { message } }, (_, room) =>
+            var room = Rooms.GetOrAdd(roomName, name => new Room() { Name = name });
+
+            lock (room)
             {
-                if (room.Messages.Count >= MessageLimit)
+                var current = room.Messages;
+                var skip = Math.Max(0, current.Count - (MessageLimit - 1));
+                var next = new List<RoomMessage>(current.Count - skip + 1);
+
+                for (var i = skip; i < current.Count; i++)
                 {
-                    room.Messages = room.Messages.TakeLast(MessageLimit - 1).ToList();
+                    next.Add(current[i]);
                 }
 
-                room.Messages.Add(message);
-                return room;
-            });
+                next.Add(message);
+
+                room.Messages = next;
+                room.MessagesRevision = Revision.Next();
+            }
         }
 
         /// <summary>
@@ -85,7 +98,8 @@ namespace slskd.Messaging
         public void TryAdd(string roomName, Room room) => Rooms.TryAdd(roomName, room);
 
         /// <summary>
-        ///     Adds the specified <paramref name="userData"/> to the specified room.
+        ///     Adds the specified <paramref name="userData"/> to the specified room, replacing any existing entry for the
+        ///     same user.
         /// </summary>
         /// <param name="roomName"></param>
         /// <param name="userData"></param>
@@ -93,20 +107,87 @@ namespace slskd.Messaging
         {
             if (Rooms.TryGetValue(roomName, out var room))
             {
-                room.Users.Add(userData);
+                lock (room)
+                {
+                    var current = room.Users;
+                    var next = new List<UserData>(current.Count + 1);
+
+                    foreach (var user in current)
+                    {
+                        if (user.Username != userData.Username)
+                        {
+                            next.Add(user);
+                        }
+                    }
+
+                    next.Add(userData);
+
+                    room.Users = next;
+                    room.UsersRevision = Revision.Next();
+                }
             }
         }
 
         /// <summary>
-        ///     Removes a tracked room.
+        ///     Returns the tracked room with the specified <paramref name="roomName"/>, if it is tracked.
         /// </summary>
         /// <param name="roomName"></param>
         /// <param name="room"></param>
-        /// <returns></returns>
+        /// <returns>A value indicating whether the room is tracked.</returns>
         public bool TryGet(string roomName, out Room room) => Rooms.TryGetValue(roomName, out room);
 
         /// <summary>
-        ///     Returns the list of messages for the specified <paramref name="roomName"/>, if it is tracked.
+        ///     Returns the current list of messages for the specified <paramref name="roomName"/> and its revision, if
+        ///     the room is tracked.
+        /// </summary>
+        /// <param name="roomName"></param>
+        /// <param name="messages">The current (immutable) list of messages.</param>
+        /// <param name="revision">The revision of <paramref name="messages"/>.</param>
+        /// <returns>A value indicating whether the room is tracked.</returns>
+        public bool TryGetMessages(string roomName, out IList<RoomMessage> messages, out long revision)
+        {
+            if (Rooms.TryGetValue(roomName, out var room))
+            {
+                lock (room)
+                {
+                    messages = room.Messages;
+                    revision = room.MessagesRevision;
+                    return true;
+                }
+            }
+
+            messages = null;
+            revision = 0;
+            return false;
+        }
+
+        /// <summary>
+        ///     Returns the current list of users for the specified <paramref name="roomName"/> and its revision, if the
+        ///     room is tracked.
+        /// </summary>
+        /// <param name="roomName"></param>
+        /// <param name="users">The current (immutable) list of users.</param>
+        /// <param name="revision">The revision of <paramref name="users"/>.</param>
+        /// <returns>A value indicating whether the room is tracked.</returns>
+        public bool TryGetUsers(string roomName, out IList<UserData> users, out long revision)
+        {
+            if (Rooms.TryGetValue(roomName, out var room))
+            {
+                lock (room)
+                {
+                    users = room.Users;
+                    revision = room.UsersRevision;
+                    return true;
+                }
+            }
+
+            users = null;
+            revision = 0;
+            return false;
+        }
+
+        /// <summary>
+        ///     Removes a tracked room.
         /// </summary>
         /// <param name="roomName"></param>
         public void TryRemove(string roomName) => Rooms.TryRemove(roomName, out _);
@@ -120,7 +201,25 @@ namespace slskd.Messaging
         {
             if (Rooms.TryGetValue(roomName, out var room))
             {
-                room.Users = room.Users.Where(u => u.Username != username).ToList();
+                lock (room)
+                {
+                    var current = room.Users;
+                    var next = new List<UserData>(current.Count);
+
+                    foreach (var user in current)
+                    {
+                        if (user.Username != username)
+                        {
+                            next.Add(user);
+                        }
+                    }
+
+                    if (next.Count != current.Count)
+                    {
+                        room.Users = next;
+                        room.UsersRevision = Revision.Next();
+                    }
+                }
             }
         }
     }

@@ -205,13 +205,19 @@ namespace slskd.Messaging.API
         /// <summary>
         ///     Gets the current list of users for the specified room.
         /// </summary>
+        /// <remarks>
+        ///     The response carries an ETag identifying the revision of the list; send it back in If-None-Match to receive
+        ///     an empty 304 Not Modified response while the list is unchanged.
+        /// </remarks>
         /// <param name="roomName"></param>
         /// <returns></returns>
         /// <response code="200">The request completed successfully.</response>
+        /// <response code="304">The list has not changed since the revision named in If-None-Match.</response>
         /// <response code="404">The specified roomName could not be found.</response>
         [HttpGet("joined/{roomName}/users")]
         [Authorize(Policy = AuthPolicy.Any)]
         [ProducesResponseType(typeof(IList<UserData>), 200)]
+        [ProducesResponseType(304)]
         [ProducesResponseType(404)]
         public IActionResult GetUsersByRoomName([FromRoute, UrlEncoded] string roomName)
         {
@@ -220,27 +226,37 @@ namespace slskd.Messaging.API
                 return Forbid();
             }
 
-            if (Tracker.TryGet(roomName, out var room))
+            if (!Tracker.TryGetUsers(roomName, out var users, out var revision))
             {
-                var response = room.Users
-                    .Select(user => UserDataResponse.FromUserData(user, self: user.Username == ApplicationStateMonitor.CurrentValue.User.Username));
-
-                return Ok(response);
+                return NotFound();
             }
 
-            return NotFound();
+            if (RevisionTag.IsNotModified(HttpContext, revision))
+            {
+                return StatusCode(StatusCodes.Status304NotModified);
+            }
+
+            var self = ApplicationStateMonitor.CurrentValue.User.Username;
+
+            return Ok(users.Select(user => UserDataResponse.FromUserData(user, self: user.Username == self)));
         }
 
         /// <summary>
         ///     Gets the current list of messages for the specified room.
         /// </summary>
+        /// <remarks>
+        ///     The response carries an ETag identifying the revision of the list; send it back in If-None-Match to receive
+        ///     an empty 304 Not Modified response while the list is unchanged.
+        /// </remarks>
         /// <param name="roomName"></param>
         /// <returns></returns>
         /// <response code="200">The request completed successfully.</response>
+        /// <response code="304">The list has not changed since the revision named in If-None-Match.</response>
         /// <response code="404">The specified roomName could not be found.</response>
         [HttpGet("joined/{roomName}/messages")]
         [Authorize(Policy = AuthPolicy.Any)]
         [ProducesResponseType(typeof(IList<RoomMessage>), 200)]
+        [ProducesResponseType(304)]
         [ProducesResponseType(404)]
         public IActionResult GetMessagesByRoomName([FromRoute, UrlEncoded] string roomName)
         {
@@ -249,15 +265,19 @@ namespace slskd.Messaging.API
                 return Forbid();
             }
 
-            if (Tracker.TryGet(roomName, out var room))
+            if (!Tracker.TryGetMessages(roomName, out var messages, out var revision))
             {
-                var response = room.Messages
-                    .Select(message => RoomMessageResponse.FromRoomMessage(message, self: message.Username == ApplicationStateMonitor.CurrentValue.User.Username));
-
-                return Ok(response);
+                return NotFound();
             }
 
-            return NotFound();
+            if (RevisionTag.IsNotModified(HttpContext, revision))
+            {
+                return StatusCode(StatusCodes.Status304NotModified);
+            }
+
+            var self = ApplicationStateMonitor.CurrentValue.User.Username;
+
+            return Ok(messages.Select(message => RoomMessageResponse.FromRoomMessage(message, self: message.Username == self)));
         }
 
         /// <summary>

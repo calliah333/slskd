@@ -88,6 +88,28 @@ class Chat extends Component {
     return names.length > 0 ? names[0] : '';
   };
 
+  // the last fetched conversation (with its recent messages): { username, etag, conversation }
+  cached = undefined;
+
+  // fetches the conversation with `username`, including its recent messages.
+  // if it hasn't changed since the last fetch the server answers with an empty
+  // 304 and the cached object is reused, so the message history doesn't re-render
+  fetchConversation = async (username) => {
+    const cached = this.cached?.username === username ? this.cached : undefined;
+
+    const { changed, data, etag } = await chat.get({
+      etag: cached?.etag,
+      username,
+    });
+
+    if (!changed) {
+      return cached.conversation;
+    }
+
+    this.cached = { conversation: data, etag, username };
+    return data;
+  };
+
   fetchConversations = async () => {
     // fetch all of the active conversations (but no messages)
     let conversations = await chat.getAll();
@@ -124,7 +146,7 @@ class Chat extends Component {
 
       conversations = {
         ...conversations,
-        [active]: await chat.get({ username: active }),
+        [active]: await this.fetchConversation(active),
       };
     }
 
@@ -184,7 +206,7 @@ class Chat extends Component {
                 ? conversations
                 : {
                     ...conversations,
-                    [active]: await chat.get({ username: active }),
+                    [active]: await this.fetchConversation(active),
                   },
             loading: false,
           },

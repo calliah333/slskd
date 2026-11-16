@@ -66,12 +66,30 @@ namespace slskd.Messaging
         /// <summary>
         ///     The list of users in the room.
         /// </summary>
+        /// <remarks>
+        ///     Treat as immutable once assigned; <see cref="RoomTracker"/> replaces the list (and <see cref="UsersRevision"/>)
+        ///     on every change so readers can enumerate it without locking.
+        /// </remarks>
         public IList<UserData> Users { get; set; } = new List<UserData>();
+
+        /// <summary>
+        ///     The revision of <see cref="Users"/>; changes whenever the list changes.
+        /// </summary>
+        public long UsersRevision { get; set; } = Revision.Next();
 
         /// <summary>
         ///     The list of messages.
         /// </summary>
+        /// <remarks>
+        ///     Treat as immutable once assigned; <see cref="RoomTracker"/> replaces the list (and
+        ///     <see cref="MessagesRevision"/>) on every change so readers can enumerate it without locking.
+        /// </remarks>
         public IList<RoomMessage> Messages { get; set; } = new List<RoomMessage>();
+
+        /// <summary>
+        ///     The revision of <see cref="Messages"/>; changes whenever the list changes.
+        /// </summary>
+        public long MessagesRevision { get; set; } = Revision.Next();
 
         public static Room FromRoomData(RoomData roomData)
         {
@@ -82,7 +100,7 @@ namespace slskd.Messaging
                 OperatorCount = roomData.OperatorCount,
                 Operators = roomData.Operators?.ToList(),
                 Owner = roomData.Owner,
-                Users = roomData.Users?.ToList(),
+                Users = roomData.Users?.ToList() ?? new List<UserData>(),
                 Messages = new List<RoomMessage>(),
             };
         }

@@ -39,6 +39,7 @@ namespace slskd.Messaging.API
     using System.Threading.Tasks;
     using Asp.Versioning;
     using Microsoft.AspNetCore.Authorization;
+    using Microsoft.AspNetCore.Http;
     using Microsoft.AspNetCore.Mvc;
     using slskd.Users;
 
@@ -196,20 +197,31 @@ namespace slskd.Messaging.API
         /// <summary>
         ///     Gets the conversation associated with the specified username.
         /// </summary>
+        /// <remarks>
+        ///     The response carries an ETag identifying the revision of the conversation; send it back in If-None-Match to
+        ///     receive an empty 304 Not Modified response while the conversation is unchanged.
+        /// </remarks>
         /// <param name="username">The username associated with the desired conversation.</param>
         /// <param name="includeMessages"></param>
         /// <returns></returns>
         /// <response code="200">The request completed successfully.</response>
+        /// <response code="304">The conversation has not changed since the revision named in If-None-Match.</response>
         /// <response code="404">A matching search was not found.</response>
         [HttpGet("{username}")]
         [Authorize(Policy = AuthPolicy.Any)]
         [ProducesResponseType(typeof(Conversation), 200)]
+        [ProducesResponseType(304)]
         [ProducesResponseType(404)]
         public async Task<IActionResult> GetByUsername([FromRoute, UrlEncoded] string username, [FromQuery] bool includeMessages = true)
         {
             if (Program.IsRelayAgent)
             {
                 return Forbid();
+            }
+
+            if (RevisionTag.IsNotModified(HttpContext, Messages.Conversations.GetRevision(username)))
+            {
+                return StatusCode(StatusCodes.Status304NotModified);
             }
 
             var conversation = await Messages.Conversations.FindAsync(username, includeMessages: includeMessages);
@@ -222,15 +234,34 @@ namespace slskd.Messaging.API
             return Ok(conversation);
         }
 
+        /// <summary>
+        ///     Gets the most recent messages of the conversation associated with the specified username.
+        /// </summary>
+        /// <remarks>
+        ///     The response carries an ETag identifying the revision of the conversation; send it back in If-None-Match to
+        ///     receive an empty 304 Not Modified response while the conversation is unchanged.
+        /// </remarks>
+        /// <param name="username">The username associated with the desired conversation.</param>
+        /// <param name="unAcknowledgedOnly"></param>
+        /// <returns></returns>
+        /// <response code="200">The request completed successfully.</response>
+        /// <response code="304">The conversation has not changed since the revision named in If-None-Match.</response>
+        /// <response code="404">A matching search was not found.</response>
         [HttpGet("{username}/messages")]
         [Authorize(Policy = AuthPolicy.Any)]
         [ProducesResponseType(typeof(List<PrivateMessage>), 200)]
+        [ProducesResponseType(304)]
         [ProducesResponseType(404)]
         public async Task<IActionResult> GetMessagesByUsername([FromRoute, UrlEncoded] string username, [FromQuery] bool unAcknowledgedOnly = false)
         {
             if (Program.IsRelayAgent)
             {
                 return Forbid();
+            }
+
+            if (RevisionTag.IsNotModified(HttpContext, Messages.Conversations.GetRevision(username)))
+            {
+                return StatusCode(StatusCodes.Status304NotModified);
             }
 
             var conversation = await Messages.Conversations.FindAsync(username, includeMessages: true);

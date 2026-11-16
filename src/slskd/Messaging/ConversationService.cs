@@ -33,6 +33,7 @@
 namespace slskd.Messaging
 {
     using System;
+    using System.Collections.Concurrent;
     using System.Collections.Generic;
     using System.Linq;
     using System.Linq.Expressions;
@@ -85,6 +86,18 @@ namespace slskd.Messaging
         /// <param name="id">The ID of the message.</param>
         /// <returns>The operation context, including the located message, if one was found.</returns>
         Task<PrivateMessage> FindMessageAsync(string username, int id);
+
+        /// <summary>
+        ///     Returns the current revision of the conversation with the specified <paramref name="username"/>.
+        /// </summary>
+        /// <remarks>
+        ///     The revision changes whenever the conversation or any of its messages change (a message is sent,
+        ///     received, or acknowledged, or the conversation is activated or removed) through this service. Read it
+        ///     before reading the conversation so that a concurrent change is never masked.
+        /// </remarks>
+        /// <param name="username">The username associated with the conversation.</param>
+        /// <returns>The current revision.</returns>
+        long GetRevision(string username);
 
         /// <summary>
         ///     Returns the list of all <see cref="Conversation"/> records matching the specified <paramref name="expression"/>.
@@ -142,6 +155,16 @@ namespace slskd.Messaging
         private ISoulseekClient SoulseekClient { get; }
 
         /// <summary>
+        ///     Gets the revision of conversations that have not changed since this instance was created.
+        /// </summary>
+        private long InitialRevision { get; } = Revision.Next();
+
+        /// <summary>
+        ///     Gets the revisions of conversations that have changed since this instance was created, keyed by username.
+        /// </summary>
+        private ConcurrentDictionary<string, long> Revisions { get; } = new();
+
+        /// <summary>
         ///     Acknowledges all unacknowledged <see cref="PrivateMessage"/> records from the specified <paramref name="username"/>.
         /// </summary>
         /// <param name="username">The username associated with the conversation.</param>
@@ -150,8 +173,15 @@ namespace slskd.Messaging
         {
             using var context = ContextFactory.CreateDbContext();
 
+            // materialize first; the network round trips below shouldn't hold a read cursor open on the database
             var unacked = context.PrivateMessages
-                .Where(m => m.Username == username && !m.IsAcknowledged);
+                .Where(m => m.Username == username && !m.IsAcknowledged)
+                .ToList();
+
+            if (unacked.Count == 0)
+            {
+                return;
+            }
 
             foreach (var message in unacked)
             {
@@ -160,6 +190,7 @@ namespace slskd.Messaging
             }
 
             context.SaveChanges();
+            Touch(username);
         }
 
         /// <summary>
@@ -178,6 +209,7 @@ namespace slskd.Messaging
                 await SoulseekClient.AcknowledgePrivateMessageAsync(message.Id);
                 message.IsAcknowledged = true;
                 context.SaveChanges();
+                Touch(username);
             }
             else
             {
@@ -217,13 +249,9 @@ namespace slskd.Messaging
                 if (includeMessages)
                 {
                     conversation.Messages = await ListMessagesAsync(m => m.Username == conversation.Username);
-                    conversation.UnAcknowledgedMessageCount = conversation.Messages.Count(m => !m.IsAcknowledged);
                 }
-                else
-                {
-                    var unacked = await ListMessagesAsync(m => m.Username == conversation.Username && !m.IsAcknowledged);
-                    conversation.UnAcknowledgedMessageCount = unacked.Count();
-                }
+
+                conversation.UnAcknowledgedMessageCount = CountUnacknowledged(context, conversation.Username);
             }
 
             return conversation;
@@ -248,6 +276,14 @@ namespace slskd.Messaging
         }
 
         /// <summary>
+        ///     Returns the current revision of the conversation with the specified <paramref name="username"/>.
+        /// </summary>
+        /// <param name="username">The username associated with the conversation.</param>
+        /// <returns>The current revision.</returns>
+        public long GetRevision(string username)
+            => Revisions.TryGetValue(username, out var revision) ? revision : InitialRevision;
+
+        /// <summary>
         ///     Returns the list of all <see cref="Conversation"/> records matching the specified <paramref name="expression"/>.
         /// </summary>
         /// <param name="expression">An optional expression used to locate conversations.</param>
@@ -256,26 +292,23 @@ namespace slskd.Messaging
         {
             using var context = ContextFactory.CreateDbContext();
 
-            // todo: replace this garbage with Dapper and a real SQL query
-            var unAckedMessages = context.PrivateMessages
-                .AsNoTracking()
-                .Where(m => !m.IsAcknowledged)
-                .ToList();
-
             var conversations = context.Conversations
                 .AsNoTracking()
-                .Where(expression)
+                .Where(expression ?? (c => true))
                 .OrderBy(c => c.Username)
                 .ToList();
 
-            var response = conversations.Select(c => new Conversation
+            if (conversations.Count > 0)
             {
-                Username = c.Username,
-                IsActive = c.IsActive,
-                UnAcknowledgedMessageCount = unAckedMessages.Count(m => m.Username == c.Username),
-            });
+                var unacknowledged = CountUnacknowledgedByUsername(context);
 
-            return Task.FromResult(response);
+                foreach (var conversation in conversations)
+                {
+                    conversation.UnAcknowledgedMessageCount = unacknowledged.TryGetValue(conversation.Username, out var count) ? count : 0;
+                }
+            }
+
+            return Task.FromResult<IEnumerable<Conversation>>(conversations);
         }
 
         /// <summary>
@@ -289,7 +322,7 @@ namespace slskd.Messaging
 
             var response = context.PrivateMessages
                 .AsNoTracking()
-                .Where(expression)
+                .Where(expression ?? (m => true))
                 .OrderByDescending(m => m.Timestamp)
                 .Take(100) // stupid.  TakeLast doesn't work
                 .OrderBy(m => m.Timestamp)
@@ -334,6 +367,7 @@ namespace slskd.Messaging
             }
 
             context.SaveChanges();
+            Touch(username);
 
             EventBus.Raise(new PrivateMessageReceivedEvent
             {
@@ -360,6 +394,7 @@ namespace slskd.Messaging
             {
                 conversation.IsActive = false;
                 context.SaveChanges();
+                Touch(username);
             }
             else
             {
@@ -394,6 +429,47 @@ namespace slskd.Messaging
             });
 
             context.SaveChanges();
+            Touch(username);
+        }
+
+        /// <summary>
+        ///     Counts the unacknowledged messages from the specified <paramref name="username"/>.
+        /// </summary>
+        /// <param name="context">The database context.</param>
+        /// <param name="username">The username associated with the conversation.</param>
+        /// <returns>The number of unacknowledged messages.</returns>
+        private static int CountUnacknowledged(MessagingDbContext context, string username)
+        {
+            // raw SQL because EF renders the predicate as NOT (IsAcknowledged), which SQLite can't seek on;
+            // IsAcknowledged = 0 seeks IDX_PrivateMessages_IsAcknowledgedUsername
+            return context.Database
+                .SqlQuery<int>($"SELECT COUNT(*) AS Value FROM PrivateMessages WHERE IsAcknowledged = 0 AND Username = {username}")
+                .AsEnumerable()
+                .Single();
+        }
+
+        /// <summary>
+        ///     Counts unacknowledged messages for every username that has any, in a single aggregate query.
+        /// </summary>
+        /// <param name="context">The database context.</param>
+        /// <returns>The number of unacknowledged messages, keyed by username.</returns>
+        private static Dictionary<string, int> CountUnacknowledgedByUsername(MessagingDbContext context)
+        {
+            // reads only the unacknowledged rows of IDX_PrivateMessages_IsAcknowledgedUsername, already grouped in index order
+            return context.Database
+                .SqlQuery<UnacknowledgedMessageCount>($"SELECT Username, COUNT(*) AS Count FROM PrivateMessages WHERE IsAcknowledged = 0 GROUP BY Username")
+                .AsEnumerable()
+                .ToDictionary(row => row.Username, row => row.Count);
+        }
+
+        /// <summary>
+        ///     Changes the revision of the conversation with the specified <paramref name="username"/>. Call after the
+        ///     change is committed.
+        /// </summary>
+        /// <param name="username">The username associated with the conversation.</param>
+        private void Touch(string username)
+        {
+            Revisions[username] = Revision.Next();
         }
 
         private void ActivateConversation(string username)
@@ -408,6 +484,7 @@ namespace slskd.Messaging
                     ON CONFLICT(Username) DO UPDATE SET IsActive = excluded.IsActive;
                 ");
 
+                Touch(username);
                 Log.Debug("Successfully activated Conversation for {Username}", username);
             }
             catch (Exception ex)
@@ -415,6 +492,22 @@ namespace slskd.Messaging
                 Log.Warning(ex, "Failed to activate Conversation for {Username}: {Message}", username, ex.Message);
                 throw;
             }
+        }
+
+        /// <summary>
+        ///     The number of unacknowledged messages from a user.
+        /// </summary>
+        private sealed class UnacknowledgedMessageCount
+        {
+            /// <summary>
+            ///     Gets or sets the username.
+            /// </summary>
+            public string Username { get; set; }
+
+            /// <summary>
+            ///     Gets or sets the number of unacknowledged messages.
+            /// </summary>
+            public int Count { get; set; }
         }
     }
 }
