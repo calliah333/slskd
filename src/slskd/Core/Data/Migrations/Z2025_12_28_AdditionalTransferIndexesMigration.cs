@@ -56,7 +56,9 @@ public class Z2025_12_28_AdditionalTransferIndexesMigration : IMigration
         var idxes = SchemaInspector.GetDatabaseIndexes(ConnectionString);
         var txfers = idxes["Transfers"];
 
-        var removedExists = txfers.Any(c => c.Name.Equals("IDX_Transfers_Removed", StringComparison.OrdinalIgnoreCase));
+        // superseded by IDX_Transfers_DirectionRemovedState and dropped by Z2026_11_16_DropRedundantTransferIndexesMigration
+        var removedExists = txfers.Any(c => c.Name.Equals("IDX_Transfers_Removed", StringComparison.OrdinalIgnoreCase))
+            || txfers.Any(c => c.Name.Equals("IDX_Transfers_DirectionRemovedState", StringComparison.OrdinalIgnoreCase));
         var usernameFilenameExists = txfers.Any(c => c.Name.Equals("IDX_Transfers_UsernameFilename", StringComparison.OrdinalIgnoreCase));
         var statsExist = txfers.Any(c => c.Name.Equals("IDX_Transfers_UserUploadStatistics", StringComparison.OrdinalIgnoreCase));
 

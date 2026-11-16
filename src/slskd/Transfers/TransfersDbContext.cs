@@ -90,20 +90,13 @@ namespace slskd.Transfers
                 .Property(d => d.Direction)
                 .HasConversion(new EnumToStringConverter<Soulseek.TransferDirection>());
 
-            modelBuilder
-                .Entity<Transfer>()
-                .HasIndex(t => t.Direction)
-                .HasDatabaseName("IDX_Transfers_Direction");
-
+            // no single-column Direction or Removed indexes: IDX_Transfers_DirectionRemovedState leads with both and
+            // serves every query they could, and a Removed-only index (~95% one value) is never worth reading.
+            // State stays: queries by state without a direction use it, and IDX_Transfers_Reports is partial
             modelBuilder
                 .Entity<Transfer>()
                 .HasIndex(t => t.State)
                 .HasDatabaseName("IDX_Transfers_State");
-
-            modelBuilder
-                .Entity<Transfer>()
-                .HasIndex(t => t.Removed)
-                .HasDatabaseName("IDX_Transfers_Removed");
 
             modelBuilder
                 .Entity<Transfer>()

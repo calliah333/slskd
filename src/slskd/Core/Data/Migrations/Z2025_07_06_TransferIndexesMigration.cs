@@ -56,7 +56,10 @@ public class Z2025_07_06_TransferIndexesMigration : IMigration
         var idxes = SchemaInspector.GetDatabaseIndexes(ConnectionString);
         var txfers = idxes["Transfers"];
 
-        var directionExists = txfers.Any(c => c.Name.Equals("IDX_Transfers_Direction", StringComparison.OrdinalIgnoreCase));
+        // IDX_Transfers_DirectionRemovedState (Z2026_11_15) leads with Direction and supersedes the single-column index,
+        // which Z2026_11_16_DropRedundantTransferIndexesMigration drops; don't recreate it once the composite exists
+        var directionExists = txfers.Any(c => c.Name.Equals("IDX_Transfers_Direction", StringComparison.OrdinalIgnoreCase))
+            || txfers.Any(c => c.Name.Equals("IDX_Transfers_DirectionRemovedState", StringComparison.OrdinalIgnoreCase));
         var stateExists = txfers.Any(c => c.Name.Equals("IDX_Transfers_State", StringComparison.OrdinalIgnoreCase));
 
         if (directionExists && stateExists)

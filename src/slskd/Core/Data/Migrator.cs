@@ -37,6 +37,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using Microsoft.Data.Sqlite;
 using Serilog;
 using slskd.Migrations;
 
@@ -45,6 +46,11 @@ using slskd.Migrations;
 /// </summary>
 public class Migrator
 {
+    /// <summary>
+    ///     The table, in the transfers database, recording migrations known to have been applied.
+    /// </summary>
+    public const string HistoryTable = "__slskd_migrations";
+
     /// <summary>
     ///     Initializes a new instance of the <see cref="Migrator"/> class.
     /// </summary>
@@ -66,7 +72,19 @@ public class Migrator
             { nameof(Z2026_11_15_PrivateMessageIndexesMigration), new Z2026_11_15_PrivateMessageIndexesMigration(connectionStrings: Databases) },
             { nameof(Z2026_11_15_SearchSummaryIndexMigration), new Z2026_11_15_SearchSummaryIndexMigration(connectionStrings: Databases) },
             { nameof(Z2026_11_16_PartialReportsIndexMigration), new Z2026_11_16_PartialReportsIndexMigration(connectionStrings: Databases) },
+            { nameof(Z2026_11_16_DropRedundantTransferIndexesMigration), new Z2026_11_16_DropRedundantTransferIndexesMigration(connectionStrings: Databases) },
         };
+    }
+
+    /// <summary>
+    ///     Initializes a new instance of the <see cref="Migrator"/> class with the specified <paramref name="migrations"/>.
+    /// </summary>
+    /// <param name="databases">A list of known databases.</param>
+    /// <param name="migrations">The migrations, in the order they are to be applied.</param>
+    public Migrator(ConnectionStringDictionary databases, Dictionary<string, IMigration> migrations)
+    {
+        Databases = databases;
+        Migrations = migrations;
     }
 
     private ConnectionStringDictionary Databases { get; }
@@ -93,17 +111,24 @@ public class Migrator
         /*
             determine which migrations need to be applied
 
-            for the time being, we'll rely on each of the migrations to determine whether they need to be applied
-            this will work until:
-              1) there's a migration that isn't idempotent (can't tell whether it needs to be applied on its own), or..
-              2) there are > ~20 migrations, making repeated I/O of database files too slow/expensive on low spec hardware
-
-            when the time comes, migration history should be stored within the database files themselves.
+            migrations recorded in the history table are skipped without touching the database they target; the rest
+            decide for themselves by inspecting the schema (every migration is idempotent), and the ones found already
+            satisfied are recorded so they aren't inspected again. the schema check remains the source of truth whenever
+            history is missing, e.g. after the transfers database is deleted, or when forced.
         */
+        HashSet<string> history;
+
         try
         {
+            history = force ? [] : ReadHistory();
+
             foreach (var migration in Migrations.Keys)
             {
+                if (history.Contains(migration))
+                {
+                    continue;
+                }
+
                 // warning: performs I/O
                 if (!Migrations[migration].NeedsToBeApplied())
                 {
@@ -116,6 +141,9 @@ public class Migrator
                     migrationsToApply.Add(migration);
                 }
             }
+
+            // recorded before the backups below are taken, so a failed migration that restores them keeps these
+            Record(migrationsToSkip);
         }
         catch (Exception ex)
         {
@@ -191,6 +219,7 @@ public class Migrator
                 try
                 {
                     Migrations[migration].Apply();
+                    Record([migration]);
 
                     Log.Information("Migration {Name} was applied successfully (elapsed: {Duration}ms)", migration, currentSw.ElapsedMilliseconds);
                 }
@@ -239,4 +268,58 @@ public class Migrator
 
     private string MakeSourceDatabasePath(string database) => Path.Combine(Program.DataDirectory, $"{database}.db");
     private string MakeBackupDatabasePath(string database, string timestamp) => Path.Combine(Program.DataBackupDirectory, $"{database}.pre-migration-backup.{timestamp}.db");
+
+    private HashSet<string> ReadHistory()
+    {
+        using var connection = new SqliteConnection(Databases[Database.Transfers]);
+        connection.Open();
+
+        using var create = new SqliteCommand($"CREATE TABLE IF NOT EXISTS {HistoryTable} (Name TEXT PRIMARY KEY, AppliedAt TEXT NOT NULL)", connection);
+        create.ExecuteNonQuery();
+
+        using var select = new SqliteCommand($"SELECT Name FROM {HistoryTable}", connection);
+        using var reader = select.ExecuteReader();
+
+        var names = new HashSet<string>(StringComparer.Ordinal);
+
+        while (reader.Read())
+        {
+            names.Add(reader.GetString(0));
+        }
+
+        return names;
+    }
+
+    private void Record(IEnumerable<string> migrations)
+    {
+        var names = migrations.ToList();
+
+        if (names.Count == 0)
+        {
+            return;
+        }
+
+        using var connection = new SqliteConnection(Databases[Database.Transfers]);
+        connection.Open();
+
+        using var transaction = connection.BeginTransaction();
+
+        // created here too, for forced runs that skip ReadHistory()
+        using (var create = new SqliteCommand($"CREATE TABLE IF NOT EXISTS {HistoryTable} (Name TEXT PRIMARY KEY, AppliedAt TEXT NOT NULL)", connection, transaction))
+        {
+            create.ExecuteNonQuery();
+        }
+
+        using var insert = new SqliteCommand($"INSERT OR REPLACE INTO {HistoryTable} (Name, AppliedAt) VALUES ($name, $at)", connection, transaction);
+        var name = insert.Parameters.Add("$name", SqliteType.Text);
+        insert.Parameters.AddWithValue("$at", DateTime.UtcNow.ToString("O"));
+
+        foreach (var migration in names)
+        {
+            name.Value = migration;
+            insert.ExecuteNonQuery();
+        }
+
+        transaction.Commit();
+    }
 }
