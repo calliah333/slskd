@@ -1,9 +1,9 @@
 import { list } from '../../../lib/events';
 import { LoaderSegment } from '../../Shared';
 import React, { useEffect, useState } from 'react';
-import { Icon, Pagination, Popup, Table } from 'semantic-ui-react';
+import { Icon, Loader, Pagination, Popup, Table } from 'semantic-ui-react';
 
-const PER_PAGE = 10;
+const PER_PAGE = 25;
 
 const replaceHyphensWithNonBreakingEquivalent = (string) =>
   string?.replaceAll('-', '‑');
@@ -12,55 +12,65 @@ const Events = () => {
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [events, setEvents] = useState([]);
-
-  const fetch = async () => {
-    setLoading(true);
-
-    try {
-      const { events: items, totalCount } = await list({
-        limit: PER_PAGE,
-        offset: (page - 1) * PER_PAGE,
-      });
-
-      const tp = Math.ceil(totalCount / PER_PAGE);
-
-      setEvents(items);
-      setTotalPages(Number.isNaN(tp) ? 0 : tp);
-
-      return items;
-    } catch (error) {
-      console.error(error);
-      setEvents([]);
-      setTotalPages(0);
-
-      return [];
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const paginationChanged = ({ activePage }) => {
-    if (activePage >= 1) {
-      setPage(activePage);
-    }
-  };
+  const [events, setEvents] = useState(undefined);
 
   useEffect(() => {
-    fetch();
-  }, [page]); // eslint-disable-line react-hooks/exhaustive-deps
+    // a slow response for a page the user already left must not overwrite the current one
+    let current = true;
 
-  if (loading) {
+    const fetch = async () => {
+      setLoading(true);
+
+      try {
+        const { events: items, totalCount } = await list({
+          limit: PER_PAGE,
+          offset: (page - 1) * PER_PAGE,
+        });
+
+        if (!current) return;
+
+        const tp = Math.ceil(totalCount / PER_PAGE);
+
+        setEvents(items);
+        setTotalPages(Number.isNaN(tp) ? 0 : tp);
+      } catch (error) {
+        console.error(error);
+
+        if (current) {
+          setEvents([]);
+          setTotalPages(0);
+        }
+      } finally {
+        if (current) setLoading(false);
+      }
+    };
+
+    fetch();
+
+    return () => {
+      current = false;
+    };
+  }, [page]);
+
+  // only the first load replaces the view; paging keeps the current rows visible until the next arrive
+  if (events === undefined) {
     return <LoaderSegment />;
   }
 
   return (
     <>
       <div className="header-buttons">
+        <Loader
+          active={loading}
+          inline
+          size="small"
+        />
         <Pagination
           activePage={page}
           className="header-buttons"
-          onPageChange={(event, data) => paginationChanged({ ...data })}
+          onPageChange={(_, { activePage }) =>
+            activePage >= 1 && setPage(activePage)
+          }
           totalPages={totalPages}
         />
       </div>
