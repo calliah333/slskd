@@ -328,14 +328,15 @@ namespace slskd.Transfers.Uploads
                 throw new SlskdException($"Upload group {groupName} doesn't have an entry in upload dictionary.  Please report this on GitHub: {Program.IssuesUrl}");
             }
 
-            // the Uploads dictionary is keyed by username; gather all of the users that belong to the same group as the requested user
-            // a user's group can change either by user changing the config or updating counts (for leech detection); resist the urge to cache this
-            var uploadsForGroup = UploadDictionary.Where(kvp => Users.GetGroup(kvp.Key) == groupName);
-
             SyncRoot.Wait();
 
             try
             {
+                // the Uploads dictionary is keyed by username; gather all of the users that belong to the same group as the requested user
+                // a user's group can change either by user changing the config or updating counts (for leech detection); resist the urge to cache this
+                // materialize once (the dictionary can't change while the lock is held) so each user's group is resolved only once
+                var uploadsForGroup = UploadDictionary.Where(kvp => Users.GetGroup(kvp.Key) == groupName).ToList();
+
                 // find this user's uploads
                 if (!UploadDictionary.TryGetValue(transfer.Username, out var uploadsForUser))
                 {
@@ -547,43 +548,57 @@ namespace slskd.Transfers.Uploads
                     return null;
                 }
 
-                // flip the uploads dictionary so that it is keyed by group instead of user. wait until just before we process the
-                // queue to do this, and fetch each user's group as we do, to allow users to move between groups at run time. we
-                // delay "pinning" an upload to a group (via UsedSlots, below) for the same reason.
-                var readyUploadsByGroup = UploadDictionary.Aggregate(
-                    seed: new ConcurrentDictionary<string, List<Upload>>(),
-                    func: (groups, user) =>
+                // find the next upload for each group in a single pass over the queue: the earliest ready upload by the group's
+                // strategy (enqueue time for FIFO, ready time for round robin), keeping the first encountered on ties. fetch
+                // each user's group as we go, to allow users to move between groups at run time. we delay "pinning" an upload
+                // to a group (via UsedSlots, below) for the same reason.
+                Dictionary<string, Upload> nextUploadByGroup = null;
+
+                foreach (var (username, userUploads) in UploadDictionary)
+                {
+                    string groupName = null;
+                    UploadGroup userGroup = null;
+
+                    foreach (var candidate in userUploads)
                     {
-                        var ready = user.Value.Where(u => u.Ready.HasValue && !u.Started.HasValue);
-
-                        if (ready.Any())
+                        if (!candidate.Ready.HasValue || candidate.Started.HasValue)
                         {
-                            var group = Users.GetGroup(user.Key);
-
-                            groups.AddOrUpdate(
-                                key: group,
-                                addValue: new List<Upload>(ready),
-                                updateValueFactory: (group, list) =>
-                                {
-                                    list.AddRange(ready);
-                                    return list;
-                                });
+                            continue;
                         }
 
-                        return groups;
-                    });
+                        if (groupName is null)
+                        {
+                            groupName = Users.GetGroup(username);
+                            Groups.TryGetValue(groupName, out userGroup);
+                        }
+
+                        // the group was removed, or has no free slots; none of this user's uploads can start
+                        if (userGroup is null || userGroup.UsedSlots.Count >= userGroup.Slots)
+                        {
+                            break;
+                        }
+
+                        nextUploadByGroup ??= new Dictionary<string, Upload>();
+
+                        if (!nextUploadByGroup.TryGetValue(groupName, out var next) || SortKey(candidate, userGroup) < SortKey(next, userGroup))
+                        {
+                            nextUploadByGroup[groupName] = candidate;
+                        }
+                    }
+                }
+
+                if (nextUploadByGroup is null)
+                {
+                    return null;
+                }
 
                 // process each group in ascending order of priority, and stop after the first ready upload is released.
                 foreach (var group in Groups.Values.OrderBy(g => g.Priority).ThenBy(g => g.Name))
                 {
-                    if (group.UsedSlots.Count >= group.Slots || !readyUploadsByGroup.TryGetValue(group.Name, out var uploads) || !uploads.Any())
+                    if (!nextUploadByGroup.TryGetValue(group.Name, out var upload))
                     {
                         continue;
                     }
-
-                    var upload = uploads
-                        .OrderBy(u => group.Strategy == QueueStrategy.FirstInFirstOut ? u.Enqueued : u.Ready)
-                        .First();
 
                     // mark the upload as started, and "pin" it to the group from which the slot is obtained, so the slot can be
                     // returned to the proper place upon completion
@@ -609,6 +624,9 @@ namespace slskd.Transfers.Uploads
                 SyncRoot.Release();
             }
         }
+
+        private static DateTime SortKey(Upload upload, UploadGroup group)
+            => group.Strategy == QueueStrategy.FirstInFirstOut ? upload.Enqueued : upload.Ready.Value;
 
         private void EmitMetrics()
         {

@@ -1807,6 +1807,42 @@ namespace slskd.Tests.Unit.Transfers.Uploads
                 Assert.Equal(user2, result.Username);
                 Assert.Equal(file2, result.Filename);
             }
+
+            [Theory]
+            [InlineData(QueueStrategy.FirstInFirstOut)]
+            [InlineData(QueueStrategy.RoundRobin)]
+            public void Releases_Earliest_Eligible_Upload_Across_Users_Ignoring_Started_And_Unready(QueueStrategy strategy)
+            {
+                var (queue, _) = GetFixture();
+
+                var uploads = new ConcurrentDictionary<string, List<Upload>>();
+
+                // the earliest by both enqueue and ready time has already started, and an earlier-enqueued one isn't ready;
+                // the expected upload is neither the first user's first upload nor the last one examined
+                var started = new Upload() { Id = Guid.NewGuid(), Username = "a", Filename = "started", Enqueued = Now.AddMinutes(-10), Ready = Now.AddMinutes(-10), Started = Now };
+                var unready = new Upload() { Id = Guid.NewGuid(), Username = "a", Filename = "unready", Enqueued = Now.AddMinutes(-9) };
+                var later = new Upload() { Id = Guid.NewGuid(), Username = "a", Filename = "later", Enqueued = Now.AddMinutes(-3), Ready = Now.AddMinutes(-3) };
+                var expected = new Upload() { Id = Guid.NewGuid(), Username = "b", Filename = "expected", Enqueued = Now.AddMinutes(-5), Ready = Now.AddMinutes(-5) };
+                var latest = new Upload() { Id = Guid.NewGuid(), Username = "c", Filename = "latest", Enqueued = Now.AddMinutes(-1), Ready = Now.AddMinutes(-1) };
+                var latestForB = new Upload() { Id = Guid.NewGuid(), Username = "b", Filename = "latest", Enqueued = Now.AddMinutes(-1), Ready = Now.AddMinutes(-1) };
+
+                uploads.TryAdd("a", new List<Upload>() { started, unready, later });
+                uploads.TryAdd("b", new List<Upload>() { latestForB, expected });
+                uploads.TryAdd("c", new List<Upload>() { latest });
+
+                queue.SetProperty("UploadDictionary", uploads);
+
+                var groups = queue.GetProperty<Dictionary<string, UploadGroup>>("Groups");
+                groups[Application.DefaultGroup].Strategy = strategy;
+                groups[Application.DefaultGroup].Slots = 10;
+                groups[Application.DefaultGroup].UsedSlots.Add(started.Id);
+
+                var result = queue.InvokeMethod<Upload>("Process");
+
+                Assert.Same(expected, result);
+                Assert.Equal(Application.DefaultGroup, result.Group);
+                Assert.Contains(expected.Id, groups[Application.DefaultGroup].UsedSlots);
+            }
         }
 
         private static readonly DateTime Now = DateTime.UtcNow;
