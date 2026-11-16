@@ -11,12 +11,13 @@ Status: **done** (committed on this branch), **open** (worth doing, not done), *
 | Progress persisted 4×/s per active transfer | 250ms `ExecuteUpdate` in both transfer services; the UI reads once a second | **done**: 1/s |
 | GROUP BY / ORDER BY temp b-trees could spill to disk | default `temp_store` | **done**: `temp_store=MEMORY` per connection |
 | Listing searches read every search's response JSON | Most list columns sit after the multi-MB `ResponsesJson` in the row | **done**: covering `IDX_Searches_Summary` (15ms → 0.05ms for 200 × 400KB searches) |
-| Search lookups by id still read the whole row | SQLite uses the primary key, not the covering index | **open**: move responses to their own table |
+| Search lookups by id read the whole multi-MB row; huge searches re-parsed per page | All responses were one JSON column on the search row | **done**: `SearchResponses` table (one row per response, sortable/hideable columns, files as JSON). First page of a 10k-response search 590ms → 88ms; by-id lookup no longer touches responses |
 | Unread message counts were O(conversations × unread) in memory | `ConversationService.ListAsync` | **done**: one `GROUP BY` on `(IsAcknowledged, Username)` |
 | Events table grows forever; any page size accepted | `EventBus` persists every event | **done**: limit capped at 1000; opt-in `retention.events` |
 | Shares scan: one connection + transaction per file | `InsertDirectory`/`InsertFile` per row | **done**: one writer, ~1000 rows per transaction, prepared commands |
 | Shares DB uses `Cache=shared` | `ShareRepositoryFactory` | **open**: shared cache locks at table level, so searches can wait behind a scan batch commit |
-| Redundant single-column transfer indexes (`Direction`, `State`, `Removed`) cost writes | Each is a prefix of a composite index (`Removed` is ~95% one value anyway) | **rejected for now**: `Z2025_07_06_TransferIndexesMigration` detects whether it ran by these index names, so dropping them makes it re-run, with a full DB backup, on every start. Needs a migration history table first |
+| Redundant single-column transfer indexes (`Direction`, `Removed`) cost writes | `IDX_Transfers_DirectionRemovedState` leads with both; `Removed` alone is ~95% one value | **done**: dropped. The two old migrations that created them now count the composite as satisfying them. `State` stays: `IDX_Transfers_Reports` is partial, so active-state queries without a direction need it |
+| Every startup re-inspected every database's schema for every migration | `Migrator` | **done**: `__slskd_migrations` history table in `transfers.db`; recorded migrations are skipped, schema checks remain the fallback (deleted DB, `--force-migrations`). Verified on existing data (drop applied once, then "up to date") and on a fresh install (no migrations) |
 
 ## Hot paths
 
@@ -33,6 +34,15 @@ Status: **done** (committed on this branch), **open** (worth doing, not done), *
 | Active searches persisted + broadcast every 250ms | `SearchService` | **done**: broadcast 500ms, persist 2s; completion serializes responses once |
 | Webhooks/scripts start an unbounded task (or process) per event | `WebhookService`, `ScriptService` | **open**: bounded worker queue |
 | User caches never expire within a session | `UserService` | **open**: measure first |
+
+## Correctness bugs found along the way
+
+| Bug | Status |
+| --- | --- |
+| Rejoining a room after a reconnect kept the stale user list; a message arriving before the join finished made the join's users/owner/operators get dropped (`TryAdd`) | **done**: join response wins, messages kept |
+| A share scan hung forever if every worker failed while the directory channel was full | **done**: a failing worker closes the channel; the scan ends faulted |
+| `POST /rooms/joined` returns 200 without joining if a placeholder room exists (e.g. a message delivered just after leaving) | **open**: rare; needs a "joined" flag on tracked rooms |
+| Sending a private message while slskd is disconnected from the server fails and the message isn't kept | **open**: an outbox that sends on reconnect |
 
 ## Web UI and HTTP
 
