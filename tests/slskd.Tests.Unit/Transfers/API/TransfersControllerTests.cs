@@ -6,6 +6,7 @@ using System.Linq;
 using System.Linq.Expressions;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -302,6 +303,32 @@ public class TransfersControllerTests
         mocks.Uploads.Verify(m => m.ListActive(It.IsAny<TransferCancelFilter>()), Times.Never);
     }
 
+    [Fact]
+    public void GetUploadsPage_Returns_304_Without_Querying_When_IfNoneMatch_Is_Current()
+    {
+        var (controller, mocks) = GetFixture();
+        mocks.Uploads.Setup(m => m.Page(It.IsAny<TransferFilter>(), It.IsAny<TransferQuery>(), It.IsAny<int>(), It.IsAny<int>()))
+            .Returns(new TransferPage { Total = 0, Counts = new Dictionary<TransferStates, int>(), Transfers = [] });
+
+        Assert.IsType<OkObjectResult>(controller.GetUploadsPage());
+        var etag = controller.HttpContext.Response.Headers.ETag.ToString();
+        Assert.False(string.IsNullOrEmpty(etag));
+
+        var (second, secondMocks) = GetFixture();
+        second.HttpContext.Request.Headers.IfNoneMatch = etag;
+
+        var result = Assert.IsType<StatusCodeResult>(second.GetUploadsPage());
+        Assert.Equal(StatusCodes.Status304NotModified, result.StatusCode);
+        secondMocks.Uploads.Verify(m => m.Page(It.IsAny<TransferFilter>(), It.IsAny<TransferQuery>(), It.IsAny<int>(), It.IsAny<int>()), Times.Never);
+
+        var (stale, staleMocks) = GetFixture();
+        stale.HttpContext.Request.Headers.IfNoneMatch = "\"1\"";
+        staleMocks.Uploads.Setup(m => m.Page(It.IsAny<TransferFilter>(), It.IsAny<TransferQuery>(), It.IsAny<int>(), It.IsAny<int>()))
+            .Returns(new TransferPage { Total = 0, Counts = new Dictionary<TransferStates, int>(), Transfers = [] });
+
+        Assert.IsType<OkObjectResult>(stale.GetUploadsPage());
+    }
+
     private static Transfer NewTransfer(string username, string filename) => new()
     {
         Id = Guid.NewGuid(),
@@ -317,7 +344,10 @@ public class TransfersControllerTests
         var controller = new TransfersController(
             new TransferService(contextFactory: null, uploadService: mocks.Uploads.Object, downloadService: mocks.Downloads.Object),
             mocks.Users.Object,
-            mocks.OptionsSnapshot.Object);
+            mocks.OptionsSnapshot.Object)
+        {
+            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() },
+        };
 
         return (controller, mocks);
     }

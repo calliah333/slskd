@@ -42,6 +42,7 @@ namespace slskd.Messaging.API
     using Microsoft.AspNetCore.Authorization;
     using Microsoft.AspNetCore.Http;
     using Microsoft.AspNetCore.Mvc;
+    using slskd.Core.API;
     using Soulseek;
 
     /// <summary>

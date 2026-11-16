@@ -30,7 +30,7 @@
 //   ╰───────────────────────────────────────────╶──── ─ ─── ─  ── ──┈  ┈
 // </copyright>
 
-namespace slskd.Messaging.API
+namespace slskd.Core.API
 {
     using System.Linq;
     using Microsoft.AspNetCore.Http;

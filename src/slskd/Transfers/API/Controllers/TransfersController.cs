@@ -45,6 +45,7 @@ namespace slskd.Transfers.API
     using Microsoft.AspNetCore.Http;
     using Microsoft.AspNetCore.Mvc;
     using Serilog;
+    using slskd.Core.API;
     using slskd.Users;
     using Soulseek;
 
@@ -976,6 +977,11 @@ namespace slskd.Transfers.API
 
             limit = Math.Min(limit, TransferPaging.MaxLimit);
 
+            if (IsNotModified())
+            {
+                return StatusCode(StatusCodes.Status304NotModified);
+            }
+
             var result = page(parsed, query, offset, limit);
 
             return Ok(new TransferPageResponse
@@ -1030,6 +1036,11 @@ namespace slskd.Transfers.API
 
             limit = Math.Min(limit, TransferPaging.MaxSummaryLimit);
 
+            if (IsNotModified())
+            {
+                return StatusCode(StatusCodes.Status304NotModified);
+            }
+
             var result = summarize(parsedFilter, query, grouping, parsedSort, limit);
 
             return Ok(new TransferSummaryResponse
@@ -1045,5 +1056,11 @@ namespace slskd.Transfers.API
                 Rows = result.Rows,
             });
         }
+
+        // the web UI polls these every second (page) or 15 seconds (summary); when nothing in the transfers database has
+        // been written since the client's copy, answer 304 without querying. the revision must be read before the query
+        // runs (inside RevisionTag), so a concurrent write yields at worst a fresh body with an old tag, never the reverse
+        private bool IsNotModified()
+            => RevisionTag.IsNotModified(HttpContext, RevisionInterceptor<TransfersDbContext>.Current);
     }
 }

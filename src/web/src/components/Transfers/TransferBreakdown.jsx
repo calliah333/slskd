@@ -56,22 +56,36 @@ const TransferBreakdown = ({
 
   useEffect(() => {
     let current = true;
+    let etag;
+    // a plain function so the post-await assignment isn't flagged as a race; polls never overlap
+    const remember = (value) => {
+      etag = value;
+    };
 
-    // aggregates scan every matching row, so this refreshes slowly rather than every second
+    // aggregates scan every matching row, so this refreshes slowly rather than every second,
+    // and the server skips the scan entirely (304) when no transfer was written since
     const stop = poll(async () => {
       try {
-        const response = await transfersLibrary.getSummary({
-          by,
-          direction,
-          filter,
-          limit: LIMIT,
-          search,
-          sort,
-          username,
-        });
+        const response = await transfersLibrary.getSummaryIfChanged(
+          {
+            by,
+            direction,
+            filter,
+            limit: LIMIT,
+            search,
+            sort,
+            username,
+          },
+          etag,
+        );
 
         if (current) {
-          setResult({ ...response, key });
+          remember(response.etag);
+
+          if (response.changed) {
+            setResult({ ...response.data, key });
+          }
+
           setError(undefined);
         }
       } catch (fetchError) {

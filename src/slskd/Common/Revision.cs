@@ -30,7 +30,7 @@
 //   ╰───────────────────────────────────────────╶──── ─ ─── ─  ── ──┈  ┈
 // </copyright>
 
-namespace slskd.Messaging
+namespace slskd
 {
     using System;
     using System.Threading;

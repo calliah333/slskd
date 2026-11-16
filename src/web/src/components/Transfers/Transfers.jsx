@@ -134,23 +134,37 @@ const Transfers = ({ direction, server }) => {
 
   useEffect(() => {
     let current = true;
+    // the ETag of this poller's last response; this request only (a new key restarts the effect)
+    let etag;
+    // a plain function so the post-await assignment isn't flagged as a race; polls never overlap
+    const remember = (value) => {
+      etag = value;
+    };
 
     // poll() never overlaps calls, pauses while the tab is hidden and refetches on return.
     // any change to the request (or an explicit refresh) restarts it immediately; responses
-    // from the previous poller are discarded via `current`
+    // from the previous poller are discarded via `current`. while nothing in the transfers
+    // database changes the server answers 304, so idle pages cost no query, payload, or render
     const stop = poll(async () => {
       try {
-        const response = await transfersLibrary.getPage({
-          direction,
-          filter,
-          limit: PAGE_SIZE,
-          offset,
-          search,
-          username,
-        });
+        const response = await transfersLibrary.getPageIfChanged(
+          {
+            direction,
+            filter,
+            limit: PAGE_SIZE,
+            offset,
+            search,
+            username,
+          },
+          etag,
+        );
 
         if (current) {
-          setPage({ ...response, key });
+          remember(response.etag);
+
+          if (response.changed) {
+            setPage({ ...response.data, key });
+          }
         }
       } catch (error) {
         if (current) {

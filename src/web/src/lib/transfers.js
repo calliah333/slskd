@@ -1,20 +1,10 @@
 import api from './api';
+import { getIfChanged } from './conditional';
 
 export const PAGE_SIZE = 500;
 export const MAX_PAGE_SIZE = 5_000;
 
-/**
- * Fetches one page of transfers, grouped by user and directory.
- * @param {object} params
- * @param {'download'|'upload'} params.direction - The transfer direction.
- * @param {'all'|'active'|'completed'|'succeeded'|'errored'|'cancelled'} [params.filter] - The state filter.
- * @param {string} [params.username] - Only transfers with exactly this user.
- * @param {string} [params.search] - Only transfers whose filename or username contains this text, ignoring case.
- * @param {number} [params.offset] - The number of matching rows to skip.
- * @param {number} [params.limit] - The page size (1..5000).
- * @returns {Promise<{ filter: string, username?: string, search?: string, offset: number, limit: number, total: number, counts: object, users: object[] }>}
- */
-export const getPage = async ({
+const pageUrl = ({
   direction,
   filter = 'all',
   username,
@@ -30,12 +20,31 @@ export const getPage = async ({
   parameters.append('offset', offset);
   parameters.append('limit', limit);
 
-  return (
-    await api.get(
-      `/transfers/${encodeURIComponent(direction)}s/page?${parameters}`,
-    )
-  ).data;
+  return `/transfers/${encodeURIComponent(direction)}s/page?${parameters}`;
 };
+
+/**
+ * Fetches one page of transfers, grouped by user and directory.
+ * @param {object} params
+ * @param {'download'|'upload'} params.direction - The transfer direction.
+ * @param {'all'|'active'|'completed'|'succeeded'|'errored'|'cancelled'} [params.filter] - The state filter.
+ * @param {string} [params.username] - Only transfers with exactly this user.
+ * @param {string} [params.search] - Only transfers whose filename or username contains this text, ignoring case.
+ * @param {number} [params.offset] - The number of matching rows to skip.
+ * @param {number} [params.limit] - The page size (1..5000).
+ * @returns {Promise<{ filter: string, username?: string, search?: string, offset: number, limit: number, total: number, counts: object, users: object[] }>}
+ */
+export const getPage = async (params) => (await api.get(pageUrl(params))).data;
+
+/**
+ * Like getPage, but sends the ETag of the caller's current copy of the same page; the server answers
+ * 304 without querying when nothing in the transfers database changed since.
+ * @param {object} parameters - As for getPage.
+ * @param {string} [etag] - The ETag of the previous response for the same parameters.
+ * @returns {Promise<{ changed: boolean, data?: object, etag?: string }>}
+ */
+export const getPageIfChanged = (parameters, etag) =>
+  getIfChanged(pageUrl(parameters), etag);
 
 /**
  * Groups transfers by user, directory, or file and fetches the largest groups.
@@ -47,9 +56,9 @@ export const getPage = async ({
  * @param {string} [params.username] - Only transfers with exactly this user.
  * @param {string} [params.search] - Only transfers whose filename or username contains this text.
  * @param {number} [params.limit] - The maximum number of groups (1..1000).
- * @returns {Promise<{ groups: number, transfers: number, rows: { key: string, transfers: number, users: number, succeeded: number, bytes: number, lastActivityAt: string }[] }>}
+ * @returns {string} The request URL.
  */
-export const getSummary = async ({
+const summaryUrl = ({
   direction,
   by = 'directory',
   sort = 'users',
@@ -67,12 +76,17 @@ export const getSummary = async ({
   if (search) parameters.append('search', search);
   parameters.append('limit', limit);
 
-  return (
-    await api.get(
-      `/transfers/${encodeURIComponent(direction)}s/summary?${parameters}`,
-    )
-  ).data;
+  return `/transfers/${encodeURIComponent(direction)}s/summary?${parameters}`;
 };
+
+/**
+ * Fetches a summary (see summaryUrl for parameters) unless the caller's copy, identified by `etag`, is current.
+ * @param {object} parameters - As for summaryUrl.
+ * @param {string} [etag] - The ETag of the previous response for the same parameters.
+ * @returns {Promise<{ changed: boolean, data?: { groups: number, transfers: number, rows: object[] }, etag?: string }>}
+ */
+export const getSummaryIfChanged = (parameters, etag) =>
+  getIfChanged(summaryUrl(parameters), etag);
 
 /**
  * Fetches every transfer matching a filter as a flat list, in chunks of MAX_PAGE_SIZE.

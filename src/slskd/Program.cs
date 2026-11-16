@@ -1552,7 +1552,7 @@ namespace slskd
                 services.AddDbContextFactory<T>(options =>
                 {
                     options.UseSqlite(connectionString);
-                    options.AddInterceptors(new SqliteConnectionOpenedInterceptor());
+                    options.AddInterceptors(new SqliteConnectionOpenedInterceptor(), new RevisionInterceptor<T>());
 
                     if (OptionsAtStartup.Flags.LogSQL)
                     {
