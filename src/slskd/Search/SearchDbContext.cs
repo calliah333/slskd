@@ -55,6 +55,25 @@ namespace slskd.Search
                 .Entity<Search>()
                 .Property(e => e.EndedAt)
                 .HasConversion(v => v, v => v.HasValue ? DateTime.SpecifyKind(v.Value, DateTimeKind.Utc) : null);
+
+            // covers every query that omits responses (see Extensions.WithoutResponses()): the search list, lookups by id,
+            // and pruning. most of these columns are stored after ResponsesJson, which for a completed search can span
+            // thousands of overflow pages that SQLite would otherwise have to walk to reach them
+            modelBuilder
+                .Entity<Search>()
+                .HasIndex(e => new
+                {
+                    e.Id,
+                    e.StartedAt,
+                    e.EndedAt,
+                    e.FileCount,
+                    e.LockedFileCount,
+                    e.ResponseCount,
+                    e.SearchText,
+                    e.State,
+                    e.Token,
+                })
+                .HasDatabaseName("IDX_Searches_Summary");
         }
     }
 }

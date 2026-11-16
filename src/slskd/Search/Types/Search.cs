@@ -57,13 +57,37 @@ namespace slskd.Search
         [NotMapped]
         public IEnumerable<Response> Responses { get; set; } = new List<Response>();
 
+        /// <summary>
+        ///     Gets or sets the JSON representation of <see cref="Responses"/>, as stored in the database.
+        /// </summary>
+        /// <remarks>
+        ///     EF Core reads this several times per save (snapshot, change detection, parameter), and the responses of a
+        ///     large search serialize to tens of megabytes, so the result is remembered for as long as <see cref="Responses"/>
+        ///     refers to the same collection. Assign a new collection rather than modifying the current one in place.
+        /// </remarks>
         [JsonIgnore]
         public string ResponsesJson
         {
-            get => JsonSerializer.Serialize(Responses);
+            get
+            {
+                var responses = Responses;
+                var memo = serializedResponses;
+
+                if (memo is not null && ReferenceEquals(memo.Source, responses))
+                {
+                    return memo.Json;
+                }
+
+                var json = JsonSerializer.Serialize(responses);
+                serializedResponses = new SerializedResponses(responses, json);
+                return json;
+            }
+
             set
             {
-                Responses = JsonSerializer.Deserialize<IEnumerable<Response>>(value);
+                var responses = JsonSerializer.Deserialize<List<Response>>(value);
+                Responses = responses;
+                serializedResponses = new SerializedResponses(responses, value);
             }
         }
 
@@ -71,5 +95,10 @@ namespace slskd.Search
         public DateTime StartedAt { get; init; } = DateTime.Now;
         public SearchStates State { get; set; }
         public int Token { get; init; }
+
+        // a reference type, so that the source and its serialization are read and written together
+        private SerializedResponses serializedResponses;
+
+        private sealed record SerializedResponses(object Source, string Json);
     }
 }

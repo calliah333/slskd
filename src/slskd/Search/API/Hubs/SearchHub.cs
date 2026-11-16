@@ -33,6 +33,7 @@
 namespace slskd.Search.API
 {
     using System;
+    using System.Collections.Generic;
     using System.Threading.Tasks;
     using Microsoft.AspNetCore.Authorization;
     using Microsoft.AspNetCore.SignalR;
@@ -44,6 +45,7 @@ namespace slskd.Search.API
         public static readonly string Response = "RESPONSE";
         public static readonly string Update = "UPDATE";
         public static readonly string Delete = "DELETE";
+        public static readonly string DeleteMany = "DELETE_MANY";
     }
 
     /// <summary>
@@ -103,6 +105,17 @@ namespace slskd.Search.API
         public static Task BroadcastDeleteAsync(this IHubContext<SearchHub> hub, Search search)
         {
             return hub.Clients.All.SendAsync(SearchHubMethods.Delete, search with { Responses = null });
+        }
+
+        /// <summary>
+        ///     Broadcast the deletion of many searches at once (e.g. when pruning).
+        /// </summary>
+        /// <param name="hub">The hub.</param>
+        /// <param name="ids">The ids of the deleted searches.</param>
+        /// <returns>The operation context.</returns>
+        public static Task BroadcastDeleteManyAsync(this IHubContext<SearchHub> hub, IEnumerable<Guid> ids)
+        {
+            return hub.Clients.All.SendAsync(SearchHubMethods.DeleteMany, ids);
         }
     }
 

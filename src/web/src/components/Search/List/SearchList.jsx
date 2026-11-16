@@ -1,7 +1,7 @@
 import ErrorSegment from '../../Shared/ErrorSegment';
 import Switch from '../../Shared/Switch';
 import SearchListRow from './SearchListRow';
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Card, Icon, Loader, Table } from 'semantic-ui-react';
 
 const SearchList = ({
@@ -11,6 +11,21 @@ const SearchList = ({
   onStop = () => {},
   searches = {},
 }) => {
+  // hub updates replace one search at a time (~2/s while one runs) without
+  // changing which searches exist, and a search's start time never changes,
+  // so only re-sort when searches are added or removed
+  const ids = Object.keys(searches);
+  const idsKey = ids.join(',');
+
+  const order = useMemo(
+    () =>
+      ids
+        .map((id) => [id, Date.parse(searches[id].startedAt)])
+        .sort((a, b) => b[1] - a[1])
+        .map(([id]) => id),
+    [idsKey], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+
   return (
     <Card
       className="search-list-card"
@@ -58,16 +73,14 @@ const SearchList = ({
                 </Table.Row>
               </Table.Header>
               <Table.Body>
-                {Object.values(searches)
-                  .sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt))
-                  .map((search) => (
-                    <SearchListRow
-                      key={search.id}
-                      onRemove={onRemove}
-                      onStop={onStop}
-                      search={search}
-                    />
-                  ))}
+                {order.map((id) => (
+                  <SearchListRow
+                    key={id}
+                    onRemove={onRemove}
+                    onStop={onStop}
+                    search={searches[id]}
+                  />
+                ))}
               </Table.Body>
             </Table>
           </Switch>

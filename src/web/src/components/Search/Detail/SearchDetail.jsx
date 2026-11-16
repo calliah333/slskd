@@ -1,15 +1,10 @@
-import {
-  filterResponse,
-  getResponses,
-  parseFiltersFromString,
-} from '../../../lib/searches';
-import { sleep } from '../../../lib/util';
+import { getResponsePage } from '../../../lib/searches';
 import ErrorSegment from '../../Shared/ErrorSegment';
 import LoaderSegment from '../../Shared/LoaderSegment';
 import Switch from '../../Shared/Switch';
 import Response from '../Response';
 import SearchDetailHeader from './SearchDetailHeader';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Checkbox, Dropdown, Input, Segment } from 'semantic-ui-react';
 
 const sortDropdownOptions = [
@@ -25,6 +20,11 @@ const sortDropdownOptions = [
   },
 ];
 
+// responses are filtered, sorted and paged by the server; fetch this many at a time
+const pageSize = 5;
+
+const emptyResults = { matchedCount: 0, responses: [], totalCount: 0 };
+
 const SearchDetail = ({
   creating,
   disabled,
@@ -38,113 +38,140 @@ const SearchDetail = ({
   const { fileCount, id, isComplete, lockedFileCount, responseCount, state } =
     search;
 
-  const [loading, setLoading] = useState(false);
+  const [fetched, setFetched] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState(undefined);
 
-  const [results, setResults] = useState([]);
+  // the responses loaded so far (a prefix of the matching responses, in order), and the counts for the current query
+  const [results, setResults] = useState(emptyResults);
 
   // filters and sorting options
-  const [hiddenResults, setHiddenResults] = useState([]);
   const [resultSort, setResultSort] = useState('uploadSpeed');
   const [hideLocked, setHideLocked] = useState(true);
   const [hideNoFreeSlots, setHideNoFreeSlots] = useState(false);
   const [foldResults, setFoldResults] = useState(false);
   const [resultFilters, setResultFilters] = useState('');
   const [appliedResultFilters, setAppliedResultFilters] = useState('');
-  const [displayCount, setDisplayCount] = useState(5);
 
-  // when the search transitions from !isComplete -> isComplete,
-  // fetch the results from the server
+  // hiding a user drops their response locally, without refetching; later
+  // requests exclude them so paging picks up where the loaded responses end
+  const hiddenUsernames = useRef([]);
+
+  // bumped whenever loaded responses are discarded, so that responses to
+  // requests made before then are ignored
+  const generation = useRef(0);
+
+  const getPage = useCallback(
+    (offset) =>
+      getResponsePage({
+        filter: appliedResultFilters,
+        hiddenUsernames: hiddenUsernames.current,
+        hideLocked,
+        hideNoFreeSlots,
+        id,
+        limit: pageSize,
+        offset,
+        sortBy: resultSort,
+      }),
+    [appliedResultFilters, hideLocked, hideNoFreeSlots, id, resultSort],
+  );
+
+  // when a user uses the action buttons, we will *probably* re-use this component,
+  // but with a new search ID.  clear everything to prepare for the transition
+  const reset = useCallback(() => {
+    generation.current += 1;
+    hiddenUsernames.current = [];
+    setFetched(false);
+    setLoadingMore(false);
+    setError(undefined);
+    setResults(emptyResults);
+  }, []);
+
+  // navigating to another search may re-use this component
+  const previousId = useRef(id);
+
   useEffect(() => {
+    if (previousId.current !== id) {
+      previousId.current = id;
+      reset();
+    }
+  }, [id, reset]);
+
+  // fetch the first page once the search is complete, and again whenever the
+  // query changes.  the previous results stay up until the new ones arrive.
+  useEffect(() => {
+    if (!isComplete) {
+      return;
+    }
+
+    generation.current += 1;
+    const current = generation.current;
+
     const get = async () => {
       try {
-        setLoading(true);
+        const page = await getPage(0);
 
-        // the results may not be ready yet.  this is very rare, but
-        // if it happens the search will complete with no results.
-        await sleep(500);
-
-        const responses = await getResponses({ id });
-        setResults(responses);
-        setLoading(false);
+        if (generation.current === current) {
+          setResults(page);
+          setFetched(true);
+        }
       } catch (getError) {
-        setError(getError);
-        setLoading(false);
+        if (generation.current === current) {
+          setError(getError);
+        }
       }
     };
 
-    if (isComplete) {
-      get();
-    }
-  }, [id, isComplete]);
+    get();
+  }, [getPage, isComplete]);
 
-  // filtering re-scans every file of every response; wait for typing to
-  // pause instead of doing it on each keystroke
+  // filtering scans every file of every response on the server; wait for
+  // typing to pause instead of querying on each keystroke
   useEffect(() => {
     const timer = setTimeout(() => setAppliedResultFilters(resultFilters), 200);
     return () => clearTimeout(timer);
   }, [resultFilters]);
 
-  // apply sorting and filters.  this can take a while for larger result
-  // sets, so memoize it.
-  const sortedAndFilteredResults = useMemo(() => {
-    const sortOptions = {
-      queueLength: { field: 'queueLength', order: 'asc' },
-      uploadSpeed: { field: 'uploadSpeed', order: 'desc' },
-    };
+  const showMore = async () => {
+    const current = generation.current;
+    setLoadingMore(true);
 
-    const { field, order } = sortOptions[resultSort];
+    try {
+      const page = await getPage(results.responses.length);
 
-    const filters = parseFiltersFromString(appliedResultFilters);
-    const hidden = new Set(hiddenResults);
-
-    return results
-      .filter((r) => !hidden.has(r.username))
-      .filter((r) => !(hideNoFreeSlots && !r.hasFreeUploadSlot))
-      .map((r) => {
-        // keep the original object when there's nothing to strip, so
-        // unchanged responses keep their identity and skip re-rendering
-        if (
-          hideLocked &&
-          !(r.lockedFileCount === 0 && r.lockedFiles?.length === 0)
-        ) {
-          return { ...r, lockedFileCount: 0, lockedFiles: [] };
-        }
-
-        return r;
-      })
-      .map((response) => filterResponse({ filters, response }))
-      .filter((r) => r.fileCount + r.lockedFileCount > 0)
-      .sort((a, b) => {
-        if (order === 'asc') {
-          return a[field] - b[field];
-        }
-
-        return b[field] - a[field];
-      });
-  }, [
-    appliedResultFilters,
-    hiddenResults,
-    hideLocked,
-    hideNoFreeSlots,
-    resultSort,
-    results,
-  ]);
-
-  const hideResult = useCallback(
-    (username) => setHiddenResults((previous) => [...previous, username]),
-    [],
-  );
-
-  // when a user uses the action buttons, we will *probably* re-use this component,
-  // but with a new search ID.  clear everything to prepare for the transition
-  const reset = () => {
-    setLoading(false);
-    setError(undefined);
-    setResults([]);
-    setHiddenResults([]);
-    setDisplayCount(5);
+      if (generation.current === current) {
+        setResults((previous) => ({
+          ...page,
+          responses: [...previous.responses, ...page.responses],
+        }));
+      }
+    } catch (getError) {
+      if (generation.current === current) {
+        setError(getError);
+      }
+    } finally {
+      // only one request at a time (the button is disabled), so always clear it
+      setLoadingMore(false);
+    }
   };
+
+  const hideResult = useCallback((username) => {
+    hiddenUsernames.current = [...hiddenUsernames.current, username];
+
+    setResults((previous) => {
+      const responses = previous.responses.filter(
+        (r) => r.username !== username,
+      );
+
+      return {
+        ...previous,
+        matchedCount:
+          previous.matchedCount -
+          (previous.responses.length - responses.length),
+        responses,
+      };
+    });
+  }, []);
 
   const create = async ({ navigate, search: searchForCreate }) => {
     reset();
@@ -156,9 +183,10 @@ const SearchDetail = ({
     onRemove(search);
   };
 
-  const filteredCount = results?.length - sortedAndFilteredResults.length;
-  const remainingCount = sortedAndFilteredResults.length - displayCount;
-  const loaded = !removing && !creating && !loading && results;
+  const loading = isComplete && !fetched;
+  const filteredCount = results.totalCount - results.matchedCount;
+  const remainingCount = results.matchedCount - results.responses.length;
+  const loaded = !removing && !creating && !loading;
 
   if (error) {
     return <ErrorSegment caption={error?.message ?? error} />;
@@ -254,7 +282,7 @@ const SearchDetail = ({
           </Segment>
         )}
         {loaded &&
-          sortedAndFilteredResults.slice(0, displayCount).map((r) => (
+          results.responses.map((r) => (
             <Response
               disabled={disabled}
               isInitiallyFolded={foldResults}
@@ -267,12 +295,15 @@ const SearchDetail = ({
           (remainingCount > 0 ? (
             <Button
               className="showmore-button"
+              disabled={loadingMore}
               fluid
-              onClick={() => setDisplayCount(displayCount + 5)}
+              loading={loadingMore}
+              onClick={showMore}
               primary
               size="large"
             >
-              Show {remainingCount > 5 ? 5 : remainingCount} More Results{' '}
+              Show {remainingCount > pageSize ? pageSize : remainingCount} More
+              Results{' '}
               {`(${remainingCount} remaining, ${filteredCount} hidden by filter(s))`}
             </Button>
           ) : filteredCount > 0 ? (
@@ -290,5 +321,5 @@ const SearchDetail = ({
   );
 };
 
-// the parent re-renders on every hub update for any search (~4/s while one runs)
+// the parent re-renders on every hub update for any search (~2/s while one runs)
 export default React.memo(SearchDetail);

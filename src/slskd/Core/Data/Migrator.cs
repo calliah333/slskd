@@ -64,6 +64,7 @@ public class Migrator
             { nameof(Z2026_05_06_AddBatchesTableMigration), new Z2026_05_06_AddBatchesTableMigration(connectionStrings: Databases) },
             { nameof(Z2026_11_15_TransferViewAndReportIndexesMigration), new Z2026_11_15_TransferViewAndReportIndexesMigration(connectionStrings: Databases) },
             { nameof(Z2026_11_15_PrivateMessageIndexesMigration), new Z2026_11_15_PrivateMessageIndexesMigration(connectionStrings: Databases) },
+            { nameof(Z2026_11_15_SearchSummaryIndexMigration), new Z2026_11_15_SearchSummaryIndexMigration(connectionStrings: Databases) },
             { nameof(Z2026_11_16_PartialReportsIndexMigration), new Z2026_11_16_PartialReportsIndexMigration(connectionStrings: Databases) },
         };
     }

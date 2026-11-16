@@ -54,6 +54,11 @@ namespace slskd.Search.API
     public class SearchesController : ControllerBase
     {
         /// <summary>
+        ///     The largest page of responses that may be requested at once.
+        /// </summary>
+        private const int MaxResponsePageLimit = 1000;
+
+        /// <summary>
         ///     Initializes a new instance of the <see cref="SearchesController"/> class.
         /// </summary>
         /// <param name="searchService"></param>
@@ -157,8 +162,11 @@ namespace slskd.Search.API
         }
 
         /// <summary>
-        ///     Gets the state of the search corresponding to the specified <paramref name="id"/>.
+        ///     Gets all of the responses of the search corresponding to the specified <paramref name="id"/>.
         /// </summary>
+        /// <remarks>
+        ///     Popular searches can have many thousands of responses; prefer the paged variant.
+        /// </remarks>
         /// <param name="id">The unique id of the search.</param>
         /// <returns></returns>
         /// <response code="200">The request completed successfully.</response>
@@ -172,14 +180,98 @@ namespace slskd.Search.API
                 return Forbid();
             }
 
-            var search = await Searches.FindAsync(search => search.Id == id, includeResponses: true);
+            var responses = await Searches.GetResponsesAsync(id);
 
-            if (search == default)
+            if (responses == null)
             {
                 return NotFound();
             }
 
-            return Ok(search.Responses);
+            return Ok(responses);
+        }
+
+        /// <summary>
+        ///     Gets a filtered, sorted page of the responses of the search corresponding to the specified <paramref name="id"/>.
+        /// </summary>
+        /// <remarks>
+        ///     Responses without any files matching the filter are omitted, and the files of the responses that are returned
+        ///     are limited to those matching the filter (with file counts adjusted to match).
+        /// </remarks>
+        /// <param name="id">The unique id of the search.</param>
+        /// <param name="filter">
+        ///     The file filter; space separated terms that file names must (or, if prefixed with '-', must not) contain, and the
+        ///     options isvbr, iscbr, islossless, islossy, minbitrate:N (minbr), minbitdepth:N (minbd), minfilesize:N (minfs),
+        ///     minlength:N (minlen), and minfilesinfolder:N (minfif).
+        /// </param>
+        /// <param name="sortBy">The sort order; uploadSpeed (fastest first, the default) or queueLength (shortest first).</param>
+        /// <param name="hideLocked">A value indicating whether locked files are to be removed.</param>
+        /// <param name="hideNoFreeSlots">A value indicating whether responses from users without a free upload slot are to be omitted.</param>
+        /// <param name="hiddenUsernames">The usernames whose responses are to be omitted (repeat the parameter for each).</param>
+        /// <param name="offset">The number of matching responses to skip.</param>
+        /// <param name="limit">The maximum number of responses to return (1-1000).</param>
+        /// <returns></returns>
+        /// <response code="200">The request completed successfully.</response>
+        /// <response code="400">The request was malformed.</response>
+        /// <response code="404">A matching search was not found.</response>
+        [HttpGet("{id}/responses/page")]
+        [Authorize(Policy = AuthPolicy.Any)]
+        [ProducesResponseType(typeof(ResponsePage), 200)]
+        [ProducesResponseType(400)]
+        [ProducesResponseType(404)]
+        public async Task<IActionResult> GetResponsePageById(
+            [FromRoute] Guid id,
+            [FromQuery] string filter = null,
+            [FromQuery] ResponseSortOrder sortBy = ResponseSortOrder.UploadSpeed,
+            [FromQuery] bool hideLocked = false,
+            [FromQuery] bool hideNoFreeSlots = false,
+            [FromQuery] string[] hiddenUsernames = null,
+            [FromQuery] int offset = 0,
+            [FromQuery] int limit = 100)
+        {
+            if (Program.IsRelayAgent)
+            {
+                return Forbid();
+            }
+
+            if (!ModelState.IsValid)
+            {
+                return BadRequest(ModelState.GetReadableString());
+            }
+
+            if (!Enum.IsDefined(sortBy))
+            {
+                return BadRequest($"Invalid sortBy '{sortBy}'; expected one of: {string.Join(", ", Enum.GetNames<ResponseSortOrder>())}");
+            }
+
+            if (offset < 0)
+            {
+                return BadRequest("Offset must be greater than or equal to zero");
+            }
+
+            if (limit < 1 || limit > MaxResponsePageLimit)
+            {
+                return BadRequest($"Limit must be between 1 and {MaxResponsePageLimit}");
+            }
+
+            var responses = await Searches.GetResponsesAsync(id);
+
+            if (responses == null)
+            {
+                return NotFound();
+            }
+
+            var page = ResponsePaging.Page(responses, new ResponseQuery
+            {
+                Filter = filter,
+                SortBy = sortBy,
+                HideLocked = hideLocked,
+                HideNoFreeSlots = hideNoFreeSlots,
+                HiddenUsernames = hiddenUsernames ?? [],
+                Offset = offset,
+                Limit = limit,
+            });
+
+            return Ok(page);
         }
 
         /// <summary>

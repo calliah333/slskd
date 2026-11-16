@@ -72,6 +72,19 @@ const Searches = ({ server } = {}) => {
       });
     });
 
+    // pruning removes many searches at once
+    searchHub.on('delete_many', (ids) => {
+      onUpdate((old) => {
+        const next = { ...old };
+
+        for (const id of ids) {
+          delete next[id];
+        }
+
+        return next;
+      });
+    });
+
     searchHub.on('create', (search) => {
       onUpdate((old) => ({ ...old, [search.id]: search }));
     });
@@ -104,7 +117,7 @@ const Searches = ({ server } = {}) => {
   // create a new search, and optionally navigate to it to display the details
   // we do this if the user clicks the search icon, or repeats an existing search.
   // callbacks are stable so the memoized detail and list rows skip re-rendering
-  // on the ~4/s hub updates of other searches
+  // on the ~2/s hub updates of other searches
   const matchUrl = match.url;
   const create = useCallback(
     async ({ navigate = false, search } = {}) => {
