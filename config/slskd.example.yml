@@ -173,6 +173,7 @@
 #         cidr: 0.0.0.0/0,::/0
 # retention:
 #   search: 10080 # 7 days, in minutes
+#   events: 43200 # 30 days, in minutes
 #   transfers:
 #     upload:
 #       succeeded: 1440 # 1 day, in minutes

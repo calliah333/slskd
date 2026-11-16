@@ -35,7 +35,10 @@ namespace slskd.Events;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Serilog;
 
 /// <summary>
@@ -44,15 +47,28 @@ using Serilog;
 public class EventService
 {
     /// <summary>
+    ///     The maximum number of records deleted per statement when pruning, so that the database write lock is held
+    ///     only briefly even when a large backlog of expired events is pruned for the first time.
+    /// </summary>
+    public const int PruneBatchSize = 5000;
+
+    private int pruning;
+
+    /// <summary>
     ///     Initializes a new instance of the <see cref="EventService"/> class.
     /// </summary>
-    /// <param name="contextFactory"></param>
-    public EventService(IDbContextFactory<EventsDbContext> contextFactory)
+    /// <param name="contextFactory">The database context factory.</param>
+    /// <param name="optionsMonitor">The options monitor used to resolve the configured retention period.</param>
+    public EventService(IDbContextFactory<EventsDbContext> contextFactory, IOptionsMonitor<slskd.Options> optionsMonitor)
     {
         ContextFactory = contextFactory;
+        OptionsMonitor = optionsMonitor;
+
+        Clock.EveryFiveMinutes += (_, _) => Task.Run(() => PruneExpired());
     }
 
     private IDbContextFactory<EventsDbContext> ContextFactory { get; }
+    private IOptionsMonitor<slskd.Options> OptionsMonitor { get; }
     private ILogger Log { get; } = Serilog.Log.ForContext<EventService>();
 
     /// <summary>
@@ -139,6 +155,79 @@ public class EventService
         {
             Log.Error(ex, "Failed to add event record: {Message}", ex.Message);
             throw;
+        }
+    }
+
+    /// <summary>
+    ///     Deletes events older than the specified <paramref name="age"/>.
+    /// </summary>
+    /// <param name="age">The age after which events are eligible for pruning, in minutes.</param>
+    /// <returns>The number of pruned events.</returns>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown when the specified <paramref name="age"/> is less than zero.</exception>
+    public virtual int Prune(int age)
+    {
+        if (age < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(age), "Age must be greater than or equal to zero");
+        }
+
+        var cutoff = DateTime.UtcNow.AddMinutes(-age);
+        var pruned = 0;
+        int deleted;
+
+        try
+        {
+            // delete in batches (oldest first; the range scan is backed by the Timestamp index) so that inserts from
+            // the event bus aren't blocked behind one long-running delete
+            do
+            {
+                using var context = ContextFactory.CreateDbContext();
+
+                deleted = context.Events
+                    .Where(e => e.Timestamp < cutoff)
+                    .OrderBy(e => e.Timestamp)
+                    .Take(PruneBatchSize)
+                    .ExecuteDelete();
+
+                pruned += deleted;
+            }
+            while (deleted == PruneBatchSize);
+
+            if (pruned > 0)
+            {
+                Log.Information("Pruned {Count} events older than {Age} minutes", pruned, age);
+            }
+
+            return pruned;
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to prune events older than {Age} minutes: {Message}", age, ex.Message);
+            throw;
+        }
+    }
+
+    private void PruneExpired()
+    {
+        var age = OptionsMonitor.CurrentValue.Retention.Events;
+
+        // a large first-time prune can outlast the clock interval; never run two at once
+        if (!age.HasValue || Interlocked.CompareExchange(ref pruning, 1, 0) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            Prune(age.Value);
+        }
+        catch
+        {
+            // logged by Prune; retried on the next tick
+        }
+        finally
+        {
+            Interlocked.Exchange(ref pruning, 0);
         }
     }
 }

@@ -61,6 +61,11 @@ public class EventsController : ControllerBase
         EventBus = eventBus;
     }
 
+    /// <summary>
+    ///     The maximum page size; larger requested limits are reduced to this value.
+    /// </summary>
+    public const int MaxLimit = 1000;
+
     private EventService Events { get; }
     private EventBus EventBus { get; }
     private ILogger Log { get; } = Serilog.Log.ForContext<EventsController>();
@@ -69,7 +74,7 @@ public class EventsController : ControllerBase
     ///     Retrieves a paginated list of past event records.
     /// </summary>
     /// <param name="offset">The offset (number of records) at which to start the requested page.</param>
-    /// <param name="limit">The page size.</param>
+    /// <param name="limit">The page size. Values greater than <see cref="MaxLimit"/> are reduced to <see cref="MaxLimit"/>.</param>
     /// <returns>The list of <see cref="Event"/> records.</returns>
     /// <response code="400">The offset is less than zero, or if the limit is less than or equal to zero.</response>
     /// <response code="401">Authentication credentials are omitted.</response>
@@ -97,7 +102,8 @@ public class EventsController : ControllerBase
 
         try
         {
-            var eventRecords = Events.Get(offset, limit);
+            // bound the page; X-Total-Count still reports the full count, so clients can page through the remainder
+            var eventRecords = Events.Get(offset, Math.Min(limit, MaxLimit));
             var count = Events.Count();
 
             Response.Headers.Append("X-Total-Count", count.ToString());

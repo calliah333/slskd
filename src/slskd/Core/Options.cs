@@ -1487,6 +1487,12 @@ namespace slskd
             public int? Search { get; init; } = null;
 
             /// <summary>
+            ///     Gets the time to retain events, in minutes.
+            /// </summary>
+            [Range(5, maximum: int.MaxValue)]
+            public int? Events { get; init; } = null;
+
+            /// <summary>
             ///     Gets transfer retention options.
             /// </summary>
             [Validate]
