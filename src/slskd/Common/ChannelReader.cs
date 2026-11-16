@@ -139,8 +139,11 @@ namespace slskd.Shares
             }
             catch (Exception ex)
             {
+                // complete the channel with the exception so that producers blocked writing to a full channel are released
+                // instead of waiting forever for a reader that will never come. this also stops any other readers.
+                Channel.Writer.TryComplete(ex);
                 ExceptionHandler?.Invoke(ex);
-                TaskCompletionSource.SetException(ex);
+                TaskCompletionSource.TrySetException(ex);
                 throw;
             }
             finally

@@ -418,9 +418,15 @@ namespace slskd.Shares
                         Log.Warning("Shared file scan cancellation requested");
                         Log.Debug("DirectoryChannel fill aborted");
                     }
+                    catch (ChannelClosedException)
+                    {
+                        // a worker failed and completed the channel with its exception; awaiting the workers below
+                        // rethrows that exception, which faults the scan
+                        Log.Debug("DirectoryChannel fill aborted; a worker failed");
+                    }
                     finally
                     {
-                        channel.Writer.Complete();
+                        channel.Writer.TryComplete();
                     }
 
                     Log.Debug("Waiting for workers to finish working...");
