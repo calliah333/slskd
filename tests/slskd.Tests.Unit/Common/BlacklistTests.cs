@@ -127,4 +127,31 @@ public class BlacklistTests
             }
         }
     }
+
+    [Theory]
+    [InlineData("10.200.0.1", true)] // only in the /8; the /16 nested inside it starts closer but ends before it
+    [InlineData("10.1.2.3", true)]
+    [InlineData("12.0.0.200", true)]
+    [InlineData("12.0.1.200", true)] // adjacent ranges merge
+    [InlineData("12.0.2.0", false)]
+    [InlineData("9.255.255.255", false)]
+    [InlineData("11.0.0.1", false)]
+    public async Task Contains_Handles_Nested_Overlapping_And_Adjacent_Ranges(string ip, bool expected)
+    {
+        var filename = Path.GetTempFileName();
+
+        try
+        {
+            await File.WriteAllLinesAsync(filename, ["10.0.0.0/8", "10.1.0.0/16", "12.0.0.0/24", "12.0.0.128/25", "12.0.1.0/24"]);
+
+            var bl = new Blacklist();
+            await bl.Load(filename, BlacklistFormat.CIDR);
+
+            Assert.Equal(expected, bl.Contains(IPAddress.Parse(ip)));
+        }
+        finally
+        {
+            File.Delete(filename);
+        }
+    }
 }

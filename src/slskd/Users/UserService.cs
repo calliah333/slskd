@@ -147,6 +147,7 @@ namespace slskd.Users
         private IOptionsMonitor<Options> OptionsMonitor { get; }
         private Blacklist Blacklist { get; } = new Blacklist();
         private IReadOnlyCollection<Regex> CompiledBlacklistPatterns { get; set; } = [];
+        private IReadOnlyCollection<IPAddressRange> ParsedBlacklistCidrs { get; set; } = [];
         private ISystemClock InjectedClock { get; }
         private MemoryCache BlacklistDecisionCache { get; }
 
@@ -380,7 +381,7 @@ namespace slskd.Users
                 // check the user-curated list of blacklisted CIDRs that exists along with the list of
                 // blacklisted usernames.  these CIDRs should be one-offs and would not be expected to appear in a
                 // blacklist supplied by a third party (but might?)
-                if (ipAddress is not null && blacklist.Cidrs.Select(c => IPAddressRange.Parse(c)).Any(range => range.Contains(ipAddress)))
+                if (ipAddress is not null && ParsedBlacklistCidrs.Any(range => range.Contains(ipAddress)))
                 {
                     return true;
                 }
@@ -509,6 +510,12 @@ namespace slskd.Users
 
             CompiledBlacklistPatterns = OptionsMonitor.CurrentValue.Transfers.Groups.Blacklisted.Patterns
                 .Select(f => new Regex(f, regexOptions))
+                .ToList()
+                .AsReadOnly();
+
+            // parsed here rather than on every blacklist check; checks run for incoming searches, browses, and enqueues
+            ParsedBlacklistCidrs = OptionsMonitor.CurrentValue.Transfers.Groups.Blacklisted.Cidrs
+                .Select(c => IPAddressRange.Parse(c))
                 .ToList()
                 .AsReadOnly();
 

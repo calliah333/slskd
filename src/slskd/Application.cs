@@ -248,6 +248,8 @@ namespace slskd
         private IMessagingService Messaging { get; set; }
         private ILogger Log { get; set; } = Serilog.Log.ForContext<Application>();
         private ConcurrentDictionary<string, ILogger> Loggers { get; } = new ConcurrentDictionary<string, ILogger>();
+        // replaced whole (a reference swap) so concurrent requests never see a torn path/bytes pair
+        private CachedPicture PictureCache { get; set; }
         private Options Options => OptionsMonitor.CurrentValue;
         private OptionsAtStartup OptionsAtStartup { get; set; }
         private IOptionsMonitor<Options> OptionsMonitor { get; set; }
@@ -1997,20 +1999,32 @@ namespace slskd
         private async Task<UserInfo> UserInfoResolver(string username, IPEndPoint endpoint)
         {
             byte[] pictureBytes = null;
+            var picture = Options.Soulseek.Picture;
 
-            if (!string.IsNullOrWhiteSpace(Options.Soulseek.Picture))
+            if (!string.IsNullOrWhiteSpace(picture))
             {
                 try
                 {
-                    // note: the Picture setting is validated at startup to ensure it exists and that
-                    // it is readable
-                    pictureBytes = await System.IO.File.ReadAllBytesAsync(Options.Soulseek.Picture);
+                    // user info is requested by every peer that looks at us; read the file only when it (or the setting)
+                    // changes rather than on every request. a stat is far cheaper than reading the image
+                    var modified = System.IO.File.GetLastWriteTimeUtc(picture);
+                    var cached = PictureCache;
+
+                    if (cached is null || cached.Path != picture || cached.Modified != modified)
+                    {
+                        // note: the Picture setting is validated at startup to ensure it exists and that
+                        // it is readable
+                        cached = new CachedPicture(picture, modified, await System.IO.File.ReadAllBytesAsync(picture));
+                        PictureCache = cached;
+                    }
+
+                    pictureBytes = cached.Bytes;
                 }
                 catch (Exception ex)
                 {
                     // this isn't a serious enough problem to prevent us from continuing, so we'll just
                     // log a warning and continue, omitting the picture
-                    Log.Warning("Failed to read Soulseek picture {Picture}: {Message}", Options.Soulseek.Picture, ex.Message);
+                    Log.Warning("Failed to read Soulseek picture {Picture}: {Message}", picture, ex.Message);
                 }
             }
 
@@ -2082,5 +2096,7 @@ namespace slskd
                 }
             }
         }
+
+        private sealed record CachedPicture(string Path, DateTime Modified, byte[] Bytes);
     }
 }

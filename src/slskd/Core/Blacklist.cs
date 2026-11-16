@@ -33,6 +33,7 @@
 namespace slskd;
 
 using System;
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -288,18 +289,13 @@ public class Blacklist
             }
         }
 
-        // copy working dictionary to a temporary cache to:
-        //   * deduplicate entries
-        //   * sort arrays by first IP to enable binary search (future?)
-        //   * convert List<> to array to increase access speed
+        // copy working dictionary to a temporary cache, merging each octet's ranges into a sorted, disjoint array so
+        // lookups can binary search it (third-party lists have many overlapping and adjacent ranges)
         var tempCache = new ConcurrentDictionary<int, (uint First, uint Last)[]>();
 
         foreach (var key in dict.Keys)
         {
-            tempCache[key] = dict[key]
-                .Distinct()
-                .OrderBy(x => x.First)
-                .ToArray();
+            tempCache[key] = Merge(dict[key]);
         }
 
         // swap the temporary cache for the "real" cache, enabling a bumpless update
@@ -328,42 +324,69 @@ public class Blacklist
             return false;
         }
 
-        // grab the first octet
-        int first = ip.GetAddressBytes()[0];
+        // convert the entire IP to a uint without allocating; network order is big-endian
+        Span<byte> bytes = stackalloc byte[4];
+        ip.TryWriteBytes(bytes, out _);
+        var ipAsUint32 = BinaryPrimitives.ReadUInt32BigEndian(bytes);
 
         // check to see if *any* CIDRs covering this offset are in the blacklist
         // best case scenario for performance if not, roughly O(1)
-        if (!Cache.TryGetValue(first, out (uint, uint)[] cidrs))
+        if (!Cache.TryGetValue(bytes[0], out (uint First, uint Last)[] cidrs))
         {
             return false;
         }
 
-        // convert the entire IP to a uint
-        var ipAsUint32 = ToUint32(ip);
+        // ranges are disjoint and sorted (see Merge), so the only candidate is the last one starting at or before the IP
+        int low = 0, high = cidrs.Length - 1, candidate = -1;
 
-        // check the list for this octet sequentially until the first match
-        foreach (var cidr in cidrs)
+        while (low <= high)
         {
-            if (ipAsUint32 >= cidr.Item1 && ipAsUint32 <= cidr.Item2)
+            var mid = low + ((high - low) / 2);
+
+            if (cidrs[mid].First <= ipAsUint32)
             {
-                return true;
+                candidate = mid;
+                low = mid + 1;
+            }
+            else
+            {
+                high = mid - 1;
             }
         }
 
-        // not in the list
-        // worst case scenario for performance, O(n) where n = list length
-        return false;
+        return candidate >= 0 && ipAsUint32 <= cidrs[candidate].Last;
+    }
+
+    /// <summary>
+    ///     Sorts the specified <paramref name="ranges"/> and merges any that overlap or touch, producing disjoint ranges in
+    ///     ascending order that can be binary searched.
+    /// </summary>
+    /// <param name="ranges">The ranges to merge.</param>
+    /// <returns>The merged ranges.</returns>
+    private static (uint First, uint Last)[] Merge(IEnumerable<(uint First, uint Last)> ranges)
+    {
+        var merged = new List<(uint First, uint Last)>();
+
+        foreach (var range in ranges.OrderBy(r => r.First))
+        {
+            // ulong so a range ending at 255.255.255.255 doesn't overflow when checking adjacency
+            if (merged.Count > 0 && range.First <= (ulong)merged[^1].Last + 1)
+            {
+                merged[^1] = (merged[^1].First, Math.Max(merged[^1].Last, range.Last));
+            }
+            else
+            {
+                merged.Add(range);
+            }
+        }
+
+        return [.. merged];
     }
 
     private uint ToUint32(IPAddress ip)
     {
-        byte[] bytes = ip.GetAddressBytes();
-
-        if (BitConverter.IsLittleEndian)
-        {
-            Array.Reverse(bytes);
-        }
-
-        return BitConverter.ToUInt32(bytes, 0);
+        Span<byte> bytes = stackalloc byte[4];
+        ip.TryWriteBytes(bytes, out _);
+        return BinaryPrimitives.ReadUInt32BigEndian(bytes);
     }
 }
