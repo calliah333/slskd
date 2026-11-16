@@ -39,6 +39,7 @@ namespace slskd
     using System.ComponentModel;
     using System.ComponentModel.DataAnnotations;
     using System.IO;
+    using System.IO.Compression;
     using System.Linq;
     using System.Net;
     using System.Net.Http;
@@ -56,6 +57,7 @@ namespace slskd
     using Microsoft.AspNetCore.Diagnostics;
     using Microsoft.AspNetCore.Hosting;
     using Microsoft.AspNetCore.Http;
+    using Microsoft.AspNetCore.ResponseCompression;
     using Microsoft.AspNetCore.Server.Kestrel.Core;
     using Microsoft.EntityFrameworkCore;
     using Microsoft.Extensions.Configuration;
@@ -854,6 +856,17 @@ namespace slskd
                 .AllowCredentials()
                 .WithExposedHeaders("X-URL-Base", "X-Total-Count")));
 
+            // the web UI polls JSON (a page of transfers is ~250KB) every second and loads ~1MB of JS/CSS; both compress
+            // ~10x. Fastest levels keep the CPU cost of compressing every poll negligible
+            services.AddResponseCompression(options =>
+            {
+                options.EnableForHttps = true;
+                options.Providers.Add<BrotliCompressionProvider>();
+                options.Providers.Add<GzipCompressionProvider>();
+            });
+            services.Configure<BrotliCompressionProviderOptions>(options => options.Level = CompressionLevel.Fastest);
+            services.Configure<GzipCompressionProviderOptions>(options => options.Level = CompressionLevel.Fastest);
+
             services.ConfigureTelemetry();
 
             /*
@@ -1083,6 +1096,9 @@ namespace slskd
 
             app.UseCors("AllowAll");
 
+            // outside everything that writes a body, including the HTML rewrite/injection middleware below
+            app.UseResponseCompression();
+
             if (OptionsAtStartup.Web.Https.Force)
             {
                 app.UseHttpsRedirection();
@@ -1125,6 +1141,17 @@ namespace slskd
                         if (ctx.File.Name == "index.html" || ctx.File.Name == "default.html")
                         {
                             ctx.Context.Response.GetTypedHeaders().CacheControl = new CacheControlHeaderValue { NoCache = true };
+                        }
+                        else if (ctx.Context.Request.Path.StartsWithSegments("/static"))
+                        {
+                            // build output under /static has a content hash in every filename, so a URL's content never
+                            // changes; let browsers keep it instead of revalidating every asset on every page load
+                            ctx.Context.Response.GetTypedHeaders().CacheControl = new CacheControlHeaderValue
+                            {
+                                Public = true,
+                                MaxAge = TimeSpan.FromDays(365),
+                                Extensions = { new NameValueHeaderValue("immutable") },
+                            };
                         }
                     },
                 },
