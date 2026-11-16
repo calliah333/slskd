@@ -59,7 +59,18 @@ namespace slskd.Messaging
                 .HasConversion(v => v, v => DateTime.SpecifyKind(v, DateTimeKind.Utc));
 
             modelBuilder.Entity<PrivateMessage>().HasKey(e => new { e.Username, e.Id, e.Timestamp });
-            modelBuilder.Entity<PrivateMessage>().HasIndex(e => e.Username);
+
+            // unacknowledged counts (WHERE IsAcknowledged = 0 [AND Username = ?] [GROUP BY Username]) read only the
+            // unacknowledged entries of this index, already grouped by username
+            modelBuilder.Entity<PrivateMessage>()
+                .HasIndex(e => new { e.IsAcknowledged, e.Username })
+                .HasDatabaseName("IDX_PrivateMessages_IsAcknowledgedUsername");
+
+            // a conversation's most recent messages (WHERE Username = ? ORDER BY Timestamp DESC LIMIT n) without a sort
+            // of its whole history. also serves every lookup by username alone
+            modelBuilder.Entity<PrivateMessage>()
+                .HasIndex(e => new { e.Username, e.Timestamp })
+                .HasDatabaseName("IDX_PrivateMessages_UsernameTimestamp");
 
             modelBuilder
                 .Entity<RoomMessage>()

@@ -142,10 +142,13 @@ namespace slskd.Transfers
                 .HasDatabaseName("IDX_Transfers_DirectionRemovedEndedAt");
 
             // covers the summary, histogram, and leaderboard reports (see ReportsService), which filter on State and
-            // a range of EndedAt; covering means time-windowed reports read a slice of this index and never the table
+            // a range of EndedAt; covering means time-windowed reports read a slice of this index and never the table.
+            // partial: every report requires EndedAt IS NOT NULL, and leaving unfinished transfers out keeps the progress
+            // updates of in-progress transfers (which rewrite AverageSpeed) from touching this index at all
             modelBuilder
                 .Entity<Transfer>()
                 .HasIndex(e => new { e.State, e.EndedAt, e.Direction, e.Username, e.Size, e.AverageSpeed, e.StartedAt, e.EnqueuedAt })
+                .HasFilter("EndedAt IS NOT NULL")
                 .HasDatabaseName("IDX_Transfers_Reports");
         }
 
