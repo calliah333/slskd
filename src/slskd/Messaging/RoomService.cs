@@ -134,7 +134,10 @@ namespace slskd.Messaging
             {
                 var data = await Client.JoinRoomAsync(roomName);
                 var room = Room.FromRoomData(data);
-                RoomTracker.TryAdd(roomName, room);
+
+                // the join response is authoritative for users and metadata; the room may already be tracked if we are
+                // rejoining after a reconnect, or if a message arrived before the join completed
+                RoomTracker.AddOrUpdate(roomName, room);
 
                 Logger.Debug("Room data for {Room}: {Info}", roomName, data.ToJson());
                 return data;

@@ -1,5 +1,6 @@
 namespace slskd.Tests.Unit.Messaging;
 
+using System.Collections.Generic;
 using System.Linq;
 using slskd.Messaging;
 using Soulseek;
@@ -30,7 +31,7 @@ public class RoomTrackerTests
     public void TryAddUser_Replaces_An_Existing_Entry_For_The_Same_User()
     {
         var tracker = new RoomTracker();
-        tracker.TryAdd("room", new Room { Name = "room" });
+        tracker.AddOrUpdate("room", new Room { Name = "room" });
 
         tracker.TryAddUser("room", User("alice", UserPresence.Away));
         tracker.TryAddUser("room", User("bob", UserPresence.Online));
@@ -48,7 +49,7 @@ public class RoomTrackerTests
     public void TryRemoveUser_Changes_The_Revision_Only_When_A_User_Is_Removed()
     {
         var tracker = new RoomTracker();
-        tracker.TryAdd("room", new Room { Name = "room" });
+        tracker.AddOrUpdate("room", new Room { Name = "room" });
         tracker.TryAddUser("room", User("alice"));
         Assert.True(tracker.TryGetUsers("room", out var before, out var revision));
 
@@ -67,15 +68,68 @@ public class RoomTrackerTests
     public void Rooms_Created_Separately_Never_Share_A_Revision()
     {
         var tracker = new RoomTracker();
-        tracker.TryAdd("room", new Room { Name = "room" });
+        tracker.AddOrUpdate("room", new Room { Name = "room" });
         Assert.True(tracker.TryGetMessages("room", out _, out var first));
 
         // leave and rejoin; a client holding the old revision must not be told the new room is unchanged
         tracker.TryRemove("room");
-        tracker.TryAdd("room", new Room { Name = "room" });
+        tracker.AddOrUpdate("room", new Room { Name = "room" });
         Assert.True(tracker.TryGetMessages("room", out _, out var second));
 
         Assert.NotEqual(first, second);
+    }
+
+    [Fact]
+    public void AddOrUpdate_After_A_Message_Keeps_The_Message_And_Takes_The_Joined_Users_And_Metadata()
+    {
+        var tracker = new RoomTracker();
+
+        // a message arrives before the join completes, creating a placeholder room
+        tracker.AddOrUpdateMessage("room", Message("early"));
+        Assert.True(tracker.TryGetMessages("room", out _, out var messagesRevision));
+        Assert.True(tracker.TryGetUsers("room", out _, out var usersRevision));
+
+        tracker.AddOrUpdate("room", new Room
+        {
+            Name = "room",
+            IsPrivate = true,
+            Owner = "owner",
+            Operators = new List<string> { "op" },
+            OperatorCount = 1,
+            Users = new List<UserData> { User("alice"), User("bob") },
+        });
+
+        Assert.True(tracker.TryGetMessages("room", out var messages, out var nextMessagesRevision));
+        Assert.True(tracker.TryGetUsers("room", out var users, out var nextUsersRevision));
+        Assert.Equal(new[] { "early" }, messages.Select(m => m.Message));
+        Assert.Equal(messagesRevision, nextMessagesRevision);
+        Assert.Equal(new[] { "alice", "bob" }, users.Select(u => u.Username));
+        Assert.NotEqual(usersRevision, nextUsersRevision);
+
+        var room = tracker.Rooms["room"];
+        Assert.True(room.IsPrivate);
+        Assert.Equal("owner", room.Owner);
+        Assert.Equal(new[] { "op" }, room.Operators);
+        Assert.Equal(1, room.OperatorCount);
+    }
+
+    [Fact]
+    public void AddOrUpdate_On_Rejoin_Replaces_The_Users_And_Keeps_The_Messages()
+    {
+        var tracker = new RoomTracker();
+        tracker.AddOrUpdate("room", new Room { Name = "room", Users = new List<UserData> { User("alice"), User("gone") } });
+        tracker.AddOrUpdateMessage("room", Message("hello"));
+        Assert.True(tracker.TryGetUsers("room", out var before, out var revision));
+
+        // reconnect; "gone" left while we were disconnected and "carol" joined
+        tracker.AddOrUpdate("room", new Room { Name = "room", Users = new List<UserData> { User("alice"), User("carol") } });
+
+        Assert.True(tracker.TryGetUsers("room", out var after, out var nextRevision));
+        Assert.True(tracker.TryGetMessages("room", out var messages, out _));
+        Assert.Equal(new[] { "alice", "carol" }, after.Select(u => u.Username));
+        Assert.NotEqual(revision, nextRevision);
+        Assert.Equal(new[] { "alice", "gone" }, before.Select(u => u.Username)); // the previously published list is untouched
+        Assert.Equal(new[] { "hello" }, messages.Select(m => m.Message));
     }
 
     [Fact]

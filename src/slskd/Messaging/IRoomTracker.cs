@@ -54,11 +54,12 @@ namespace slskd.Messaging
         void AddOrUpdateMessage(string roomName, RoomMessage message);
 
         /// <summary>
-        ///     Adds the specified room to the tracker.
+        ///     Adds the specified <paramref name="room"/> to the tracker or, if the room is already tracked, replaces the
+        ///     tracked room's users and metadata with those of <paramref name="room"/> while keeping its messages.
         /// </summary>
         /// <param name="roomName"></param>
         /// <param name="room"></param>
-        void TryAdd(string roomName, Room room);
+        void AddOrUpdate(string roomName, Room room);
 
         /// <summary>
         ///     Adds the specified <paramref name="userData"/> to the specified room.

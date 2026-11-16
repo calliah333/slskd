@@ -91,11 +91,34 @@ namespace slskd.Messaging
         }
 
         /// <summary>
-        ///     Adds the specified room to the tracker.
+        ///     Adds the specified <paramref name="room"/> to the tracker or, if the room is already tracked (for example
+        ///     after a reconnect, or because a message for it arrived before the join completed), replaces the tracked
+        ///     room's users and metadata with those of <paramref name="room"/> while keeping its messages.
         /// </summary>
+        /// <remarks>
+        ///     Takes ownership of <paramref name="room"/>'s user and operator lists; do not modify them afterward.
+        /// </remarks>
         /// <param name="roomName"></param>
         /// <param name="room"></param>
-        public void TryAdd(string roomName, Room room) => Rooms.TryAdd(roomName, room);
+        public void AddOrUpdate(string roomName, Room room)
+        {
+            var tracked = Rooms.GetOrAdd(roomName, room);
+
+            if (ReferenceEquals(tracked, room))
+            {
+                return;
+            }
+
+            lock (tracked)
+            {
+                tracked.IsPrivate = room.IsPrivate;
+                tracked.OperatorCount = room.OperatorCount;
+                tracked.Operators = room.Operators;
+                tracked.Owner = room.Owner;
+                tracked.Users = room.Users;
+                tracked.UsersRevision = Revision.Next();
+            }
+        }
 
         /// <summary>
         ///     Adds the specified <paramref name="userData"/> to the specified room, replacing any existing entry for the
