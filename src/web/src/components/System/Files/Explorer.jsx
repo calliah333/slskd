@@ -1,128 +1,110 @@
 import { deleteDirectory, deleteFile, list } from '../../../lib/files';
 import { formatBytes, formatDate } from '../../../lib/util';
 import { LoaderSegment } from '../../Shared';
-import React, { useEffect, useState } from 'react';
-import { Header, Icon, Modal, Table } from 'semantic-ui-react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Button, Header, Icon, Modal, Table } from 'semantic-ui-react';
 
-const FileRow = ({
-  fullName,
-  length,
-  modifiedAt,
-  name,
-  onDeleted,
-  remoteFileManagement,
-  root,
-  subdirectory,
-}) => (
-  <Table.Row key={fullName}>
-    <Table.Cell>
-      <Icon name="file outline" />
-      {name}
-    </Table.Cell>
-    <Table.Cell>{modifiedAt ? formatDate(modifiedAt) : ''}</Table.Cell>
-    <Table.Cell>{length ? formatBytes(length) : ''}</Table.Cell>
-    <Table.Cell>
-      {remoteFileManagement ? (
-        <Modal
-          actions={[
-            'Cancel',
-            {
-              content: 'Delete',
-              key: 'done',
-              negative: true,
-              onClick: async () => {
-                await deleteFile({
-                  path: `${subdirectory.join('/')}/${fullName}`,
-                  root,
-                });
-                onDeleted();
-              },
-            },
-          ]}
-          centered
-          content={`Are you sure you want to delete file '${fullName}'?`}
-          header={
-            <Header
-              content="Confirm File Delete"
-              icon="trash alternate"
-            />
-          }
-          size="small"
-          trigger={
-            <Icon
-              color="red"
-              name="trash alternate"
-              style={{ cursor: 'pointer' }}
-            />
-          }
-        />
-      ) : null}
-    </Table.Cell>
-  </Table.Row>
+// rows are rendered in pages; a directory with tens of thousands of entries
+// otherwise blocks the page while every row mounts
+const ROW_PAGE = 500;
+
+// one collator for every comparison; localeCompare with options builds a new
+// collator per call, which dominates sorting large directories
+const nameCollator = new Intl.Collator(undefined, {
+  numeric: true,
+  sensitivity: 'base',
+});
+
+const DeleteIcon = ({ onClick }) => (
+  <Icon
+    color="red"
+    name="trash alternate"
+    onClick={onClick}
+    style={{ cursor: 'pointer' }}
+  />
 );
 
-const DirectoryRow = ({
-  deletable = true,
-  fullName,
-  modifiedAt,
-  name,
-  onClick = () => {},
-  onDeleted,
-  remoteFileManagement,
-  root,
-  subdirectory,
-}) => (
-  <Table.Row key={name}>
-    <Table.Cell
-      onClick={onClick}
-      style={{ cursor: 'pointer' }}
-    >
-      <Icon name="folder" />
-      {name}
-    </Table.Cell>
-    <Table.Cell>{modifiedAt ? formatDate(modifiedAt) : ''}</Table.Cell>
-    <Table.Cell />
-    <Table.Cell>
-      {remoteFileManagement && deletable ? (
-        <Modal
-          actions={[
-            'Cancel',
-            {
-              content: 'Delete',
-              key: 'done',
-              negative: true,
-              onClick: async () => {
-                await deleteDirectory({
-                  path: `${subdirectory.join('/')}/${fullName}`,
-                  root,
-                });
-                onDeleted();
-              },
-            },
-          ]}
-          centered
-          content={`Are you sure you want to delete directory '${fullName}'?`}
-          header={
-            <Header
-              content="Confirm Directory Delete"
-              icon="trash alternate"
+const FileRow = React.memo(({ entry, onDelete, remoteFileManagement }) => {
+  const { fullName, length, modifiedAt, name } = entry;
+
+  return (
+    <Table.Row>
+      <Table.Cell>
+        <Icon name="file outline" />
+        {name}
+      </Table.Cell>
+      <Table.Cell>{modifiedAt ? formatDate(modifiedAt) : ''}</Table.Cell>
+      <Table.Cell>{length ? formatBytes(length) : ''}</Table.Cell>
+      <Table.Cell>
+        {remoteFileManagement ? (
+          <DeleteIcon onClick={() => onDelete({ fullName, type: 'file' })} />
+        ) : null}
+      </Table.Cell>
+    </Table.Row>
+  );
+});
+
+const DirectoryRow = React.memo(
+  ({
+    deletable = true,
+    entry,
+    onDelete,
+    onOpen = () => {},
+    remoteFileManagement,
+  }) => {
+    const { fullName, modifiedAt, name } = entry;
+
+    return (
+      <Table.Row>
+        <Table.Cell
+          onClick={() => onOpen(name)}
+          style={{ cursor: 'pointer' }}
+        >
+          <Icon name="folder" />
+          {name}
+        </Table.Cell>
+        <Table.Cell>{modifiedAt ? formatDate(modifiedAt) : ''}</Table.Cell>
+        <Table.Cell />
+        <Table.Cell>
+          {remoteFileManagement && deletable ? (
+            <DeleteIcon
+              onClick={() => onDelete({ fullName, type: 'directory' })}
             />
-          }
-          size="small"
-          trigger={
-            <Icon
-              color="red"
-              name="trash alternate"
-              style={{ cursor: 'pointer' }}
-            />
-          }
-        />
-      ) : (
-        ''
-      )}
-    </Table.Cell>
-  </Table.Row>
+          ) : (
+            ''
+          )}
+        </Table.Cell>
+      </Table.Row>
+    );
+  },
 );
+
+const parentEntry = { fullName: '..', name: '..' };
+
+const sortItems = (items, sortColumn, sortDirection) => {
+  if (!items || items.length === 0) return items;
+
+  const direction = sortDirection === 'ascending' ? 1 : -1;
+
+  if (sortColumn === 'date') {
+    // parse each date once rather than on every comparison
+    return items
+      .map((item) => ({
+        item,
+        time: item.modifiedAt ? new Date(item.modifiedAt).getTime() : 0,
+      }))
+      .sort((a, b) => direction * (a.time - b.time))
+      .map(({ item }) => item);
+  }
+
+  if (sortColumn === 'name') {
+    return [...items].sort(
+      (a, b) => direction * nameCollator.compare(a.name, b.name),
+    );
+  }
+
+  return items;
+};
 
 const Explorer = ({ remoteFileManagement, root }) => {
   const [directory, setDirectory] = useState({ directories: [], files: [] });
@@ -130,6 +112,8 @@ const Explorer = ({ remoteFileManagement, root }) => {
   const [loading, setLoading] = useState(false);
   const [sortColumn, setSortColumn] = useState('name');
   const [sortDirection, setSortDirection] = useState('ascending');
+  const [rowLimit, setRowLimit] = useState(ROW_PAGE);
+  const [pendingDelete, setPendingDelete] = useState(null);
 
   const fetch = async () => {
     setLoading(true);
@@ -149,6 +133,7 @@ const Explorer = ({ remoteFileManagement, root }) => {
   };
 
   useEffect(() => {
+    setRowLimit(ROW_PAGE);
     fetch();
   }, [subdirectory]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -156,14 +141,25 @@ const Explorer = ({ remoteFileManagement, root }) => {
     setSubdirectory([]);
   }, [root]);
 
-  const select = ({ path }) => {
-    setSubdirectory([...subdirectory, path]);
-  };
+  const select = useCallback(
+    (path) => setSubdirectory((current) => [...current, path]),
+    [],
+  );
 
-  const upOneSubdirectory = () => {
-    const copy = [...subdirectory];
-    copy.pop();
-    setSubdirectory(copy);
+  const upOneSubdirectory = useCallback(
+    () => setSubdirectory((current) => current.slice(0, -1)),
+    [],
+  );
+
+  const confirmDelete = async () => {
+    const { fullName, type } = pendingDelete;
+    const remove = type === 'file' ? deleteFile : deleteDirectory;
+
+    await remove({
+      path: `${subdirectory.join('/')}/${fullName}`,
+      root,
+    });
+    fetch();
   };
 
   const handleSort = (column) => {
@@ -177,34 +173,21 @@ const Explorer = ({ remoteFileManagement, root }) => {
     }
   };
 
-  const sortItems = (items) => {
-    if (!items || items.length === 0) return items;
+  const sortedDirectories = useMemo(
+    () => sortItems(directory?.directories, sortColumn, sortDirection) ?? [],
+    [directory, sortColumn, sortDirection],
+  );
 
-    return [...items].sort((a, b) => {
-      let compareValue = 0;
-
-      if (sortColumn === 'name') {
-        compareValue = a.name.localeCompare(b.name, undefined, {
-          numeric: true,
-          sensitivity: 'base',
-        });
-      } else if (sortColumn === 'date') {
-        const dateA = a.modifiedAt ? new Date(a.modifiedAt) : new Date(0);
-        const dateB = b.modifiedAt ? new Date(b.modifiedAt) : new Date(0);
-        compareValue = dateA - dateB;
-      }
-
-      return sortDirection === 'ascending' ? compareValue : -compareValue;
-    });
-  };
+  const sortedFiles = useMemo(
+    () => sortItems(directory?.files, sortColumn, sortDirection) ?? [],
+    [directory, sortColumn, sortDirection],
+  );
 
   if (loading) {
     return <LoaderSegment />;
   }
 
-  const total = directory?.directories?.length + directory?.files?.length ?? 0;
-  const sortedDirectories = sortItems(directory?.directories);
-  const sortedFiles = sortItems(directory?.files);
+  const total = sortedDirectories.length + sortedFiles.length;
 
   return (
     <>
@@ -278,39 +261,82 @@ const Explorer = ({ remoteFileManagement, root }) => {
               {subdirectory.length > 0 && (
                 <DirectoryRow
                   deletable={false}
-                  fullName=".."
-                  name=".."
-                  onClick={upOneSubdirectory}
+                  entry={parentEntry}
+                  onOpen={upOneSubdirectory}
                   remoteFileManagement={remoteFileManagement}
-                  root={root}
-                  subdirectory={subdirectory}
                 />
               )}
-              {sortedDirectories?.map((d) => (
+              {sortedDirectories.slice(0, rowLimit).map((d) => (
                 <DirectoryRow
+                  entry={d}
                   key={d.name}
-                  onClick={() => select({ path: d.name })}
-                  onDeleted={fetch}
+                  onDelete={setPendingDelete}
+                  onOpen={select}
                   remoteFileManagement={remoteFileManagement}
-                  root={root}
-                  subdirectory={subdirectory}
-                  {...d}
                 />
               ))}
-              {sortedFiles?.map((f) => (
-                <FileRow
-                  key={f.name}
-                  onDeleted={fetch}
-                  remoteFileManagement={remoteFileManagement}
-                  root={root}
-                  subdirectory={subdirectory}
-                  {...f}
-                />
-              ))}
+              {sortedFiles
+                .slice(0, Math.max(0, rowLimit - sortedDirectories.length))
+                .map((f) => (
+                  <FileRow
+                    entry={f}
+                    key={f.name}
+                    onDelete={setPendingDelete}
+                    remoteFileManagement={remoteFileManagement}
+                  />
+                ))}
+              {total > rowLimit && (
+                <Table.Row>
+                  <Table.Cell
+                    colSpan={99}
+                    style={{ textAlign: 'center' }}
+                  >
+                    Showing {rowLimit.toLocaleString()} of{' '}
+                    {total.toLocaleString()}{' '}
+                    <Button
+                      basic
+                      compact
+                      content="Show more"
+                      onClick={() => setRowLimit(rowLimit + ROW_PAGE)}
+                      size="mini"
+                    />
+                  </Table.Cell>
+                </Table.Row>
+              )}
             </>
           )}
         </Table.Body>
       </Table>
+      {/* one confirmation modal shared by every row */}
+      <Modal
+        actions={[
+          'Cancel',
+          {
+            content: 'Delete',
+            key: 'done',
+            negative: true,
+            onClick: confirmDelete,
+          },
+        ]}
+        centered
+        content={
+          pendingDelete &&
+          `Are you sure you want to delete ${pendingDelete.type} '${pendingDelete.fullName}'?`
+        }
+        header={
+          <Header
+            content={
+              pendingDelete?.type === 'file'
+                ? 'Confirm File Delete'
+                : 'Confirm Directory Delete'
+            }
+            icon="trash alternate"
+          />
+        }
+        onClose={() => setPendingDelete(null)}
+        open={pendingDelete !== null}
+        size="small"
+      />
     </>
   );
 };

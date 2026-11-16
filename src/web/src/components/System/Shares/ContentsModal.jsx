@@ -1,8 +1,93 @@
 import { browse } from '../../../lib/shares';
 import { LoaderSegment, Switch } from '../../Shared';
 import CodeEditor from '../../Shared/CodeEditor';
-import React, { useEffect, useState } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
+import React, { useEffect, useRef, useState } from 'react';
 import { Button, Icon, Modal } from 'semantic-ui-react';
+
+// shares with more lines than this skip CodeMirror and render a virtualized
+// list instead; building and mounting a multi-megabyte document blocks the page
+const MAX_EDITOR_LINES = 20_000;
+const LINE_H = 20;
+const SCROLL_HEIGHT = 'calc(80vh - 10em)';
+
+const filenameCollator = new Intl.Collator();
+
+// mirrors the @uiw/react-codemirror light and dark themes
+const listThemes = {
+  dark: { background: '#282c34', color: '#abb2bf' },
+  light: { background: '#fff', color: '#000' },
+};
+
+const buildLines = (result, localPath, remotePath) => {
+  const lines = [];
+
+  for (const directory of result) {
+    lines.push(directory.name.replace(remotePath, localPath));
+
+    const directoryFilesOrderedByFilename = directory.files.sort(
+      (file1, file2) =>
+        filenameCollator.compare(file1.filename, file2.filename),
+    );
+
+    for (const file of directoryFilesOrderedByFilename) {
+      lines.push('\t' + file.filename.replace(remotePath, ''));
+    }
+
+    lines.push('');
+  }
+
+  return lines;
+};
+
+const LineList = ({ lines, theme }) => {
+  const parentRef = useRef(null);
+
+  const virtualizer = useVirtualizer({
+    count: lines.length,
+    estimateSize: () => LINE_H,
+    getScrollElement: () => parentRef.current,
+    overscan: 30,
+  });
+
+  return (
+    <div
+      ref={parentRef}
+      style={{
+        ...(listThemes[theme] ?? listThemes.light),
+        fontFamily: 'monospace',
+        height: SCROLL_HEIGHT,
+        overflow: 'auto',
+      }}
+    >
+      <div
+        style={{
+          height: virtualizer.getTotalSize(),
+          position: 'relative',
+        }}
+      >
+        {virtualizer.getVirtualItems().map((vi) => (
+          <div
+            key={vi.key}
+            style={{
+              height: LINE_H,
+              left: 0,
+              lineHeight: `${LINE_H}px`,
+              paddingLeft: 6,
+              paddingRight: 6,
+              position: 'absolute',
+              tabSize: 4,
+              top: vi.start,
+              whiteSpace: 'pre',
+            }}
+          >
+            {lines[vi.index]}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
 
 const ContentsModal = ({ onClose, share, theme }) => {
   const [loading, setLoading] = useState(true);
@@ -25,22 +110,9 @@ const ContentsModal = ({ onClose, share, theme }) => {
         return;
       }
 
-      const directories = result.map((directory) => {
-        const lines = [directory.name.replace(remotePath, localPath)];
-        const directoryFilesOrderedByFilename = directory.files.sort(
-          (file1, file2) => file1.filename.localeCompare(file2.filename),
-        );
+      const lines = buildLines(result, localPath, remotePath);
 
-        for (const file of directoryFilesOrderedByFilename) {
-          lines.push('\t' + file.filename.replace(remotePath, ''));
-        }
-
-        lines.push('');
-
-        return lines.join('\n');
-      });
-
-      setContents(directories.join('\n'));
+      setContents(lines.length > MAX_EDITOR_LINES ? lines : lines.join('\n'));
       setLoading(false);
     };
 
@@ -51,6 +123,8 @@ const ContentsModal = ({ onClose, share, theme }) => {
       setContents();
     }
   }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const large = Array.isArray(contents);
 
   return (
     <Modal
@@ -64,16 +138,23 @@ const ContentsModal = ({ onClose, share, theme }) => {
       </Modal.Header>
       <Modal.Content
         className="share-ls-content"
-        scrolling
+        scrolling={!large}
       >
         <Switch loading={loading && <LoaderSegment className="modal-loader" />}>
-          <CodeEditor
-            basicSetup={false}
-            editable={false}
-            style={{ minHeight: 500 }}
-            theme={theme}
-            value={contents || ''}
-          />
+          {large ? (
+            <LineList
+              lines={contents}
+              theme={theme}
+            />
+          ) : (
+            <CodeEditor
+              basicSetup={false}
+              editable={false}
+              style={{ minHeight: 500 }}
+              theme={theme}
+              value={contents || ''}
+            />
+          )}
         </Switch>
       </Modal.Content>
       <Modal.Actions>
