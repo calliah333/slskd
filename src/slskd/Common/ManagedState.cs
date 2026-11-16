@@ -33,7 +33,6 @@
 namespace slskd
 {
     using System;
-    using System.Text.Json;
     using Microsoft.Extensions.DependencyInjection;
 
     /// <summary>
@@ -149,7 +148,8 @@ namespace slskd
         /// <param name="value">The current value of the state.</param>
         public StateSnapshot(T value)
         {
-            Value = value.ToJson().FromJson<T>();
+            // state values are immutable (see ManagedState{T}), so the reference itself is a point-in-time snapshot
+            Value = value;
         }
 
         /// <summary>
@@ -161,6 +161,13 @@ namespace slskd
     /// <summary>
     ///     Provides observable management of state objects.
     /// </summary>
+    /// <remarks>
+    ///     <para>
+    ///         <typeparamref name="T"/> MUST be immutable (an enum, or a record whose members are init-only and whose
+    ///         collections are never mutated in place), and setters MUST return a new value (e.g. via <c>with</c>)
+    ///         rather than mutate the current one. Values are shared by reference with listeners and snapshots; nothing is cloned.
+    ///     </para>
+    /// </remarks>
     /// <typeparam name="T">The type of the tracked state object.</typeparam>
     public class ManagedState<T> : IManagedState<T>
     {
@@ -197,10 +204,12 @@ namespace slskd
         /// <returns>The updated state.</returns>
         public T SetValue(Func<T, T> setter)
         {
+            // listeners are invoked under the lock so that they observe changes in the order they were made, and each
+            // (Previous, Current) pair chains to the next. listeners must be cheap; defer expensive work (e.g. see Coalescer{T})
             lock (Lock)
             {
-                var previous = CurrentValue.ToJson().FromJson<T>();
-                CurrentValue = setter(CurrentValue);
+                var previous = CurrentValue;
+                CurrentValue = setter(previous);
 
                 Changed?.Invoke((previous, CurrentValue));
                 return CurrentValue;

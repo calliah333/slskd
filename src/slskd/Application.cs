@@ -171,6 +171,7 @@ namespace slskd
                 .AsReadOnly();
 
             State = state;
+            StateBroadcaster = new Coalescer<State>(TimeSpan.FromMilliseconds(250), s => ApplicationHub.BroadcastStateAsync(s));
             State.OnChange(state => State_OnChange(state));
 
             Files = fileService;
@@ -258,6 +259,7 @@ namespace slskd
         private IPushbulletService Pushbullet { get; }
         private DateTime SharesRefreshStarted { get; set; }
         private IManagedState<State> State { get; }
+        private Coalescer<State> StateBroadcaster { get; }
         private TransferService Transfers { get; init; }
         private IHubContext<ApplicationHub> ApplicationHub { get; set; }
         private IHubContext<LogsHub> LogHub { get; set; }
@@ -1979,7 +1981,9 @@ namespace slskd
 
         private void State_OnChange((State Previous, State Current) state)
         {
-            _ = ApplicationHub.BroadcastStateAsync(state.Current);
+            // bursts of changes (share scan progress, relay agents, watchdog ticks) are coalesced so that each client receives
+            // at most one full state message per interval; the most recent state is always delivered
+            StateBroadcaster.Post(state.Current);
         }
 
         /// <summary>
