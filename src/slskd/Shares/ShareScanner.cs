@@ -78,6 +78,20 @@ namespace slskd.Shares
     public class ShareScanner : IShareScanner
     {
         /// <summary>
+        ///     The approximate number of rows (directories and files) committed per transaction during a scan.
+        /// </summary>
+        /// <remarks>
+        ///     Larger batches amortize commit overhead further, but hold the write lock (which blocks searches against shared
+        ///     cache databases) for longer.
+        /// </remarks>
+        private const int WriteBatchSize = 1000;
+
+        /// <summary>
+        ///     The maximum number of scanned directories waiting to be written.
+        /// </summary>
+        private const int WriteChannelCapacity = 256;
+
+        /// <summary>
         ///     Initializes a new instance of the <see cref="ShareScanner"/> class.
         /// </summary>
         /// <param name="workerCount"></param>
@@ -293,6 +307,21 @@ namespace slskd.Shares
                     SingleWriter = true,
                 });
 
+                /*
+                    workers read file metadata in parallel, but SQLite allows only one writer at a time, and committing each
+                    row in its own transaction is very slow. workers hand each scanned directory to a single writer, which
+                    commits them in batches. the channel is bounded to limit memory if the database falls behind.
+                */
+                var writes = Channel.CreateBounded<ScannedDirectory>(new BoundedChannelOptions(WriteChannelCapacity)
+                {
+                    AllowSynchronousContinuations = false,
+                    FullMode = BoundedChannelFullMode.Wait,
+                    SingleReader = true,
+                    SingleWriter = false,
+                });
+
+                var writer = Task.Run(() => WriteAsync(writes, repository, timestamp, CancellationTokenSource));
+
                 // create workers to perform the fan out
                 var workers = new List<ChannelReader<string>>();
 
@@ -310,7 +339,8 @@ namespace slskd.Shares
 
                             var share = ResolveShareFromDirectory(directory);
 
-                            repository.InsertDirectory(directory.ReplaceFirst(share.LocalPath, share.RemotePath).NormalizePathForSoulseek(), timestamp);
+                            var maskedDirectory = directory.ReplaceFirst(share.LocalPath, share.RemotePath).NormalizePathForSoulseek();
+                            var scannedFiles = new List<ScannedFile>();
 
                             // recursively find all files in the directory and stick a record in a dictionary, keyed on the sanitized
                             // filename and with a value of a Soulseek.File object
@@ -339,7 +369,7 @@ namespace slskd.Shares
                                         filename: info.FullName,
                                         maskedFilename: info.FullName.ReplaceFirst(share.LocalPath, share.RemotePath).NormalizePathForSoulseek());
 
-                                    repository.InsertFile(maskedFilename: file.Filename, originalFilename: info.FullName, touchedAt: info.LastWriteTimeUtc, file, timestamp);
+                                    scannedFiles.Add(new ScannedFile(OriginalFilename: info.FullName, TouchedAt: info.LastWriteTimeUtc, File: file));
                                     addedFiles++;
                                 }
                             }
@@ -347,6 +377,15 @@ namespace slskd.Shares
                             {
                                 Log.Debug("Failed to scan files in directory {Directory}: {Exception}", directory, ex);
                                 Log.Warning("Failed to scan files in directory {Directory}: {Message}", directory, ex.Message);
+                            }
+
+                            // the directory and any files found before a failure are written either way, as when each was
+                            // inserted individually. if the writer has failed, this throws ChannelClosedException and the worker stops
+                            var scanned = new ScannedDirectory(maskedDirectory, scannedFiles);
+
+                            if (!writes.Writer.TryWrite(scanned))
+                            {
+                                writes.Writer.WriteAsync(scanned).AsTask().GetAwaiter().GetResult();
                             }
 
                             Interlocked.Increment(ref current);
@@ -385,7 +424,19 @@ namespace slskd.Shares
                     }
 
                     Log.Debug("Waiting for workers to finish working...");
-                    await Task.WhenAll(workers.Select(w => w.Completed));
+
+                    try
+                    {
+                        await Task.WhenAll(workers.Select(w => w.Completed));
+                    }
+                    finally
+                    {
+                        // whether the workers finished or were cancelled, wait for everything they produced to be committed.
+                        // if the writer failed, this throws its exception, which faults the scan
+                        writes.Writer.TryComplete();
+                        await writer;
+                    }
+
                     Log.Debug("All workers finished");
 
                     Log.Information("Scan found {Files} files, cached {Cached}, and filtered {Filtered} in {Elapsed}ms", cached + filtered, cached, filtered, sw.ElapsedMilliseconds - swSnapshot);
@@ -446,6 +497,53 @@ namespace slskd.Shares
                 cts?.Dispose();
 
                 SyncRoot.Release();
+            }
+        }
+
+        /// <summary>
+        ///     Writes scanned directories from the specified <paramref name="channel"/> to the <paramref name="repository"/>
+        ///     in batches until the channel is completed.
+        /// </summary>
+        /// <remarks>
+        ///     If a write fails, the channel is completed with the exception so that workers blocked writing to it are
+        ///     released, and the scan is cancelled so that the directory producer stops.
+        /// </remarks>
+        /// <param name="channel">The channel from which to read scanned directories.</param>
+        /// <param name="repository">The repository to update.</param>
+        /// <param name="timestamp">The timestamp of the scan.</param>
+        /// <param name="cancellationTokenSource">The source used to cancel the scan if a write fails.</param>
+        /// <returns>The operation context.</returns>
+        private static async Task WriteAsync(Channel<ScannedDirectory> channel, IShareRepository repository, long timestamp, CancellationTokenSource cancellationTokenSource)
+        {
+            var batch = new List<ScannedDirectory>();
+            var rows = 0;
+
+            try
+            {
+                // intentionally not cancellable; after a cancellation everything the workers already produced is committed
+                await foreach (var directory in channel.Reader.ReadAllAsync())
+                {
+                    batch.Add(directory);
+                    rows += 1 + directory.Files.Count;
+
+                    if (rows >= WriteBatchSize)
+                    {
+                        repository.InsertBatch(batch, timestamp);
+                        batch.Clear();
+                        rows = 0;
+                    }
+                }
+
+                if (batch.Count > 0)
+                {
+                    repository.InsertBatch(batch, timestamp);
+                }
+            }
+            catch (Exception ex)
+            {
+                channel.Writer.TryComplete(ex);
+                cancellationTokenSource.Cancel(swallowObjectDisposedException: true);
+                throw;
             }
         }
 

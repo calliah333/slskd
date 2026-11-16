@@ -1781,8 +1781,10 @@ namespace slskd
                 {
                     // append the list of excluded search phrases supplied by the server
                     // see https://github.com/jpdillingham/Soulseek.NET/issues/803
-                    var queryWithExclusionsApplied = new SearchQuery(terms: query.Terms, exclusions: query.Exclusions.Concat(ExcludedSearchPhrases).Distinct());
+                    // duplicates are removed when the shares service prepares the query
+                    var queryWithExclusionsApplied = new SearchQuery(terms: query.Terms, exclusions: query.Exclusions.Concat(ExcludedSearchPhrases));
 
+                    // materialized once; the response file limit applies across all share hosts
                     var results = await Shares.SearchAsync(queryWithExclusionsApplied, limit: OptionsMonitor.CurrentValue.Throttling.Search.Incoming.ResponseFileLimit);
 
                     var queryLatency = sw.ElapsedMilliseconds - filterLatency;
@@ -1791,7 +1793,7 @@ namespace slskd
 
                     SearchResponse response = null;
 
-                    if (results.Any())
+                    if (results.Count > 0)
                     {
                         // fetch the user's IP address so that we can check whether it's blacklisted.
                         // it's unfortunate that we have to do this to get the IP, but we have to do it
@@ -1820,7 +1822,7 @@ namespace slskd
                         // and we don't want to incur the massive penalties that would caching data for each request.
                         var (groupName, totalSlots, freeSlots, forecastedPosition) = Transfers.Uploads.Queue.ForecastPosition(username);
 
-                        Log.Debug("Sending search response with {Count} files to {Username} for query '{Query}'", results.Count(), username, query.SearchText);
+                        Log.Debug("Sending search response with {Count} files to {Username} for query '{Query}'", results.Count, username, query.SearchText);
 
                         response = new SearchResponse(
                             Client.Username,

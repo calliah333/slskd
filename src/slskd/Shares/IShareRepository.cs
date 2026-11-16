@@ -112,21 +112,14 @@ namespace slskd.Shares
         void FlagLatestScanAsSuspect();
 
         /// <summary>
-        ///     Inserts a directory.
+        ///     Inserts or updates the specified <paramref name="directories"/> and their files in a single transaction.
         /// </summary>
-        /// <param name="name">The fully qualified local name of the directory.</param>
-        /// <param name="timestamp">The timestamp to assign to the record.</param>
-        void InsertDirectory(string name, long timestamp);
-
-        /// <summary>
-        ///     Inserts a file.
-        /// </summary>
-        /// <param name="maskedFilename">The fully qualified remote path of the file.</param>
-        /// <param name="originalFilename">The fully qualified local path of the file.</param>
-        /// <param name="touchedAt">The timestamp at which the file was last modified, according to the host OS.</param>
-        /// <param name="file">The Soulseek.File instance representing the file.</param>
-        /// <param name="timestamp">The timestamp to assign to the record.</param>
-        void InsertFile(string maskedFilename, string originalFilename, DateTime touchedAt, File file, long timestamp);
+        /// <remarks>
+        ///     Either every record in the batch is written, or (if an exception is thrown) none are.
+        /// </remarks>
+        /// <param name="directories">The directories, and their files, to insert.</param>
+        /// <param name="timestamp">The timestamp to assign to the records.</param>
+        void InsertBatch(IEnumerable<ScannedDirectory> directories, long timestamp);
 
         /// <summary>
         ///     Inserts a scan record at the specified <paramref name="timestamp"/>.
@@ -186,10 +179,14 @@ namespace slskd.Shares
         /// <summary>
         ///     Searches the database for files matching the specified <paramref name="query"/>.
         /// </summary>
-        /// <param name="query">The search query.</param>
-        /// <param name="limit">An optional row limit.</param>
-        /// <returns>The list of matching files.</returns>
-        IEnumerable<File> Search(SearchQuery query, int? limit = null);
+        /// <remarks>
+        ///     Files matching any of the query's exclusions are omitted without consuming the <paramref name="limit"/>; if
+        ///     enough non-excluded matches exist, exactly <paramref name="limit"/> files are returned.
+        /// </remarks>
+        /// <param name="query">The prepared search query.</param>
+        /// <param name="limit">An optional limit on the number of files returned.</param>
+        /// <returns>The list of matching files, ordered by filename.</returns>
+        IReadOnlyList<File> Search(ShareSearchQuery query, int? limit = null);
 
         /// <summary>
         ///     Attempts to validate the backing database.

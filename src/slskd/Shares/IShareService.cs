@@ -123,10 +123,14 @@ namespace slskd.Shares
         /// <summary>
         ///     Searches the cache for the specified <paramref name="query"/> and returns the matching files.
         /// </summary>
+        /// <remarks>
+        ///     The <paramref name="limit"/> applies to the combined results of all hosts. Files matching any of the query's
+        ///     exclusions do not count against the limit.
+        /// </remarks>
         /// <param name="query">The query for which to search.</param>
-        /// <param name="limit">An optional row limit.</param>
+        /// <param name="limit">An optional limit on the total number of files returned.</param>
         /// <returns>The matching files.</returns>
-        Task<IEnumerable<File>> SearchAsync(SearchQuery query, int? limit = null);
+        Task<IReadOnlyList<File>> SearchAsync(SearchQuery query, int? limit = null);
 
         /// <summary>
         ///     Cancels the currently running scan on the local host, if one is running.

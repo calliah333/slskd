@@ -45,6 +45,11 @@ namespace slskd.Shares
     /// </summary>
     public class SqliteShareRepository : IShareRepository
     {
+        private const string SearchSql = "SELECT files.maskedFilename, files.code, files.size, files.extension, files.attributeJson FROM filenames " +
+            "INNER JOIN files ON filenames.maskedFilename = files.maskedFilename " +
+            "WHERE filenames MATCH @match AND filenames.maskedFilename > @after " +
+            "ORDER BY filenames.maskedFilename ASC LIMIT @limit;";
+
         /// <summary>
         ///     Initializes a new instance of the <see cref="SqliteShareRepository"/> class.
         /// </summary>
@@ -334,47 +339,61 @@ namespace slskd.Shares
         }
 
         /// <summary>
-        ///     Inserts a directory.
+        ///     Inserts or updates the specified <paramref name="directories"/> and their files in a single transaction.
         /// </summary>
-        /// <param name="name">The fully qualified local name of the directory.</param>
-        /// <param name="timestamp">The timestamp to assign to the record.</param>
-        public void InsertDirectory(string name, long timestamp)
+        /// <remarks>
+        ///     Either every record in the batch is written, or (if an exception is thrown) none are.
+        /// </remarks>
+        /// <param name="directories">The directories, and their files, to insert.</param>
+        /// <param name="timestamp">The timestamp to assign to the records.</param>
+        public void InsertBatch(IEnumerable<ScannedDirectory> directories, long timestamp)
         {
             using var conn = GetConnection();
+            using var transaction = conn.BeginTransaction();
 
-            conn.ExecuteNonQuery("INSERT INTO directories VALUES(@name, @timestamp) ON CONFLICT DO UPDATE SET timestamp = excluded.timestamp;", cmd =>
-            {
-                cmd.Parameters.AddWithValue("name", name);
-                cmd.Parameters.AddWithValue("timestamp", timestamp);
-            });
-        }
+            using var directoryCmd = new SqliteCommand("INSERT INTO directories VALUES(@name, @timestamp) ON CONFLICT DO UPDATE SET timestamp = excluded.timestamp;", conn, transaction);
+            var directoryName = directoryCmd.Parameters.Add("name", SqliteType.Text);
+            directoryCmd.Parameters.AddWithValue("timestamp", timestamp);
+            directoryCmd.Prepare();
 
-        /// <summary>
-        ///     Inserts a file.
-        /// </summary>
-        /// <param name="maskedFilename">The fully qualified remote path of the file.</param>
-        /// <param name="originalFilename">The fully qualified local path of the file.</param>
-        /// <param name="touchedAt">The timestamp at which the file was last modified, according to the host OS.</param>
-        /// <param name="file">The Soulseek.File instance representing the file.</param>
-        /// <param name="timestamp">The timestamp to assign to the record.</param>
-        public void InsertFile(string maskedFilename, string originalFilename, DateTime touchedAt, Soulseek.File file, long timestamp)
-        {
-            using var conn = GetConnection();
-
-            conn.ExecuteNonQuery("INSERT INTO files (maskedFilename, originalFilename, size, touchedAt, code, extension, attributeJson, timestamp) " +
+            using var fileCmd = new SqliteCommand(
+                "INSERT INTO files (maskedFilename, originalFilename, size, touchedAt, code, extension, attributeJson, timestamp) " +
                 "VALUES(@maskedFilename, @originalFilename, @size, @touchedAt, @code, @extension, @attributeJson, @timestamp) " +
                 "ON CONFLICT DO UPDATE SET originalFilename = excluded.originalFilename, size = excluded.size, touchedAt = excluded.touchedAt, " +
-                "code = excluded.code, extension = excluded.extension, attributeJson = excluded.attributeJson, timestamp = excluded.timestamp;", cmd =>
+                "code = excluded.code, extension = excluded.extension, attributeJson = excluded.attributeJson, timestamp = excluded.timestamp;",
+                conn,
+                transaction);
+            var maskedFilename = fileCmd.Parameters.Add("maskedFilename", SqliteType.Text);
+            var originalFilename = fileCmd.Parameters.Add("originalFilename", SqliteType.Text);
+            var size = fileCmd.Parameters.Add("size", SqliteType.Integer);
+            var touchedAt = fileCmd.Parameters.Add("touchedAt", SqliteType.Text);
+            var code = fileCmd.Parameters.Add("code", SqliteType.Integer);
+            var extension = fileCmd.Parameters.Add("extension", SqliteType.Text);
+            var attributeJson = fileCmd.Parameters.Add("attributeJson", SqliteType.Text);
+            fileCmd.Parameters.AddWithValue("timestamp", timestamp);
+            fileCmd.Prepare();
+
+            foreach (var directory in directories)
+            {
+                directoryName.Value = directory.Name;
+                directoryCmd.ExecuteNonQuery();
+
+                foreach (var scanned in directory.Files)
                 {
-                    cmd.Parameters.AddWithValue("maskedFilename", maskedFilename);
-                    cmd.Parameters.AddWithValue("originalFilename", originalFilename);
-                    cmd.Parameters.AddWithValue("size", file.Size);
-                    cmd.Parameters.AddWithValue("touchedAt", touchedAt.ToLongDateString());
-                    cmd.Parameters.AddWithValue("code", file.Code);
-                    cmd.Parameters.AddWithValue("extension", file.Extension);
-                    cmd.Parameters.AddWithValue("attributeJson", file.Attributes.ToJson());
-                    cmd.Parameters.AddWithValue("timestamp", timestamp);
-                });
+                    var file = scanned.File;
+
+                    maskedFilename.Value = file.Filename;
+                    originalFilename.Value = scanned.OriginalFilename;
+                    size.Value = file.Size;
+                    touchedAt.Value = scanned.TouchedAt.ToLongDateString();
+                    code.Value = file.Code;
+                    extension.Value = file.Extension;
+                    attributeJson.Value = file.Attributes.ToJson();
+                    fileCmd.ExecuteNonQuery();
+                }
+            }
+
+            transaction.Commit();
         }
 
         /// <summary>
@@ -575,65 +594,84 @@ namespace slskd.Shares
         /// <summary>
         ///     Searches the database for files matching the specified <paramref name="query"/>.
         /// </summary>
-        /// <param name="query">The search query.</param>
-        /// <param name="limit">An optional row limit.</param>
-        /// <returns>The list of matching files.</returns>
-        public IEnumerable<Soulseek.File> Search(SearchQuery query, int? limit = null)
+        /// <remarks>
+        ///     Files matching any of the query's exclusions are omitted without consuming the <paramref name="limit"/>; if
+        ///     enough non-excluded matches exist, exactly <paramref name="limit"/> files are returned.
+        /// </remarks>
+        /// <param name="query">The prepared search query.</param>
+        /// <param name="limit">An optional limit on the number of files returned.</param>
+        /// <returns>The list of matching files, ordered by filename.</returns>
+        public IReadOnlyList<Soulseek.File> Search(ShareSearchQuery query, int? limit = null)
         {
-            string Clean(string str) => str.Replace("/", " ")
-                .Replace("\\", " ")
-                .Replace(":", " ")
-                .Replace("\"", " ")
-                .Replace("'", "''");
-
-            var match = string.Join(" AND ", query.Terms.Select(token => $"\"{Clean(token)}\""));
-            var exclusions = string.Join(" OR ", query.Exclusions.Select(exclusion => $"\"{Clean(exclusion)}\""));
-
-            var sql = $"SELECT files.maskedFilename, files.code, files.size, files.extension, files.attributeJson FROM filenames " +
-                "INNER JOIN files ON filenames.maskedFilename = files.maskedFilename " +
-                "WHERE filenames MATCH @match " +
-                $"ORDER BY filenames.maskedFilename ASC {(limit.HasValue ? $"LIMIT {limit.Value}" : string.Empty)};";
+            if (query.ExcludesEverything || limit <= 0)
+            {
+                return Array.Empty<Soulseek.File>();
+            }
 
             var results = new List<Soulseek.File>();
 
             try
             {
                 using var conn = GetConnection();
-                using var cmd = new SqliteCommand(sql, conn);
-                cmd.Parameters.AddWithValue("match", $"({match}) {(query.Exclusions.Any() ? $"NOT ({exclusions})" : string.Empty)}");
-                using var reader = cmd.ExecuteReader();
+                using var cmd = new SqliteCommand(SearchSql, conn);
+                cmd.Parameters.AddWithValue("match", query.Match);
+                var after = cmd.Parameters.AddWithValue("after", string.Empty);
+                var pageSize = cmd.Parameters.AddWithValue("limit", -1); // a negative LIMIT means no limit
 
-                while (reader.Read())
+                /*
+                    SQLite matches exclusions on whole tokens only, so a filename containing an exclusion as a substring
+                    ("foo xbarx baz" given exclusion "bar") must be dropped here. those rows must not count against the limit,
+                    so if any are dropped and the page was full, keep reading (keyset paging on the unique filename) until
+                    the limit is reached or the matches are exhausted.
+                */
+                while (true)
                 {
-                    var filename = reader.GetString(0);
+                    var fetch = -1;
 
-                    // SQLite takes care of matching on tokens, but unfortunately doesn't work in cases where an exclusion appears as a substring.
-                    // example: the token matching works to exclude the result "foo bar baz" given a "bar" exclusion, but does not exclude "foo xbarx baz"
-                    // for this reason we must iterate over the exclusion list and ensure none appear as substrings
-                    // **CAUTION** performance of this will degrade exponentially as the list of exclusions grows
-                    if (query.Exclusions.Any(x => filename.Contains(x, StringComparison.OrdinalIgnoreCase)))
+                    if (limit.HasValue)
                     {
-                        Log.Debug("Dropping excluded filename {File}", filename);
-                        continue;
+                        var remaining = limit.Value - results.Count;
+
+                        // over-fetch slightly when rows may be dropped so that one query usually suffices
+                        fetch = query.HasExclusions ? remaining + Math.Max(remaining / 8, 8) : remaining;
                     }
 
-                    var code = reader.GetInt32(1);
-                    var size = reader.GetInt64(2);
-                    var extension = reader.GetString(3);
-                    var attributeJson = reader.GetString(4);
+                    pageSize.Value = fetch;
 
-                    var attributeList = attributeJson.FromJson<List<FileAttribute>>();
+                    var rows = 0;
+                    string last = null;
 
-                    var file = new Soulseek.File(code, filename, size, extension, attributeList);
-                    results.Add(file);
+                    using (var reader = cmd.ExecuteReader())
+                    {
+                        while ((!limit.HasValue || results.Count < limit.Value) && reader.Read())
+                        {
+                            rows++;
+                            last = reader.GetString(0);
+
+                            if (query.IsExcluded(last))
+                            {
+                                Log.Debug("Dropping excluded filename {File}", last);
+                                continue;
+                            }
+
+                            var attributeList = reader.GetString(4).FromJson<List<FileAttribute>>();
+                            results.Add(new Soulseek.File(reader.GetInt32(1), last, reader.GetInt64(2), reader.GetString(3), attributeList));
+                        }
+                    }
+
+                    // done if the limit was reached or the page came back short, meaning there are no more matches
+                    if (!limit.HasValue || results.Count >= limit.Value || rows < fetch)
+                    {
+                        return results;
+                    }
+
+                    after.Value = last;
                 }
-
-                return results;
             }
             catch (Exception ex)
             {
-                Log.Warning(ex, "Failed to execute shared file query '{Query}': {Message}", query, ex.Message);
-                return Enumerable.Empty<Soulseek.File>();
+                Log.Warning(ex, "Failed to execute shared file query '{Query}': {Message}", query.Query, ex.Message);
+                return Array.Empty<Soulseek.File>();
             }
         }
 

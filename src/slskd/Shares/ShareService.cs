@@ -359,12 +359,49 @@ namespace slskd.Shares
         /// <summary>
         ///     Searches the cache for the specified <paramref name="query"/> and returns the matching files.
         /// </summary>
+        /// <remarks>
+        ///     The <paramref name="limit"/> applies to the combined results of all hosts. Files matching any of the query's
+        ///     exclusions do not count against the limit.
+        /// </remarks>
         /// <param name="query">The query for which to search.</param>
-        /// <param name="limit">An optional row limit.</param>
+        /// <param name="limit">An optional limit on the total number of files returned.</param>
         /// <returns>The matching files.</returns>
-        public Task<IEnumerable<File>> SearchAsync(SearchQuery query, int? limit = null)
+        public Task<IReadOnlyList<File>> SearchAsync(SearchQuery query, int? limit = null)
         {
-            var results = AllRepositories.SelectMany(r => r.Search(query, limit));
+            var prepared = new ShareSearchQuery(query);
+            var remaining = limit;
+
+            IReadOnlyList<File> results = Array.Empty<File>();
+            List<File> combined = null;
+
+            foreach (var repository in AllRepositories)
+            {
+                if (remaining <= 0)
+                {
+                    break;
+                }
+
+                var files = repository.Search(prepared, remaining);
+
+                if (files.Count == 0)
+                {
+                    continue;
+                }
+
+                remaining -= files.Count;
+
+                // avoid copying in the common case where only one repository has matches
+                if (results.Count == 0)
+                {
+                    results = files;
+                }
+                else
+                {
+                    combined ??= new List<File>(results);
+                    combined.AddRange(files);
+                    results = combined;
+                }
+            }
 
             return Task.FromResult(results);
         }
