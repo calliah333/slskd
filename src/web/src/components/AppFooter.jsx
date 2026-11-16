@@ -12,6 +12,7 @@ const formatSpeed = (bytesPerSecond) => {
 };
 
 const AppFooter = ({
+  connecting = false,
   server = {},
   transferMetrics = {},
   user = {},
@@ -35,10 +36,10 @@ const AppFooter = ({
     >
       <Menu.Item>
         <Icon
-          color={isConnected ? 'green' : 'red'}
+          color={connecting ? 'grey' : isConnected ? 'green' : 'red'}
           name="circle"
         />
-        {isConnected ? username : 'Disconnected'}
+        {connecting ? 'Connecting' : isConnected ? username : 'Disconnected'}
       </Menu.Item>
       <Menu.Item>
         <Icon

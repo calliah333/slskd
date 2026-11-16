@@ -174,7 +174,11 @@ const AppRoutes = React.memo(
       <AppContext.Provider value={contextValue}>
         <RouteErrorBoundary resetKey={pathname}>
           <Suspense fallback={<LoaderSegment />}>
-            {isAgent ? (
+            {/* agent mode comes from the page (window.relayAgent, injected by the server) so routes can render
+                before the hub's first state; without it (e.g. the dev server) wait for the state to know */}
+            {!applicationStateReceived && window.relayAgent === undefined ? (
+              <LoaderSegment />
+            ) : isAgent ? (
               <Switch>
                 <Route
                   path={`${urlBase}/system/:tab?`}
@@ -226,7 +230,7 @@ const AppRoutes = React.memo(
                 <Route
                   path={`${urlBase}/chat`}
                   render={(props) =>
-                    // Chat reads the logged in user from the application state
+                    // Chat reads state.user, which only the hub's state provides
                     applicationStateReceived ? (
                       <Chat
                         {...props}
@@ -649,7 +653,7 @@ class App extends Component {
       );
     }
 
-    const isAgent = mode === 'Agent';
+    const isAgent = window.relayAgent ?? mode === 'Agent';
 
     if (theme === 'dark') {
       document.documentElement.classList.add(theme);
@@ -856,6 +860,7 @@ class App extends Component {
           </Sidebar.Pusher>
         </Sidebar.Pushable>
         <AppFooter
+          connecting={!applicationStateReceived}
           server={server}
           transferMetrics={transferMetrics}
           user={user}

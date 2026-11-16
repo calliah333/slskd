@@ -1119,8 +1119,11 @@ namespace slskd
             app.UseHTMLRewrite("((\\.)?\\/static)", $"{(urlBase == "/" ? string.Empty : urlBase)}/static");
             app.UseHTMLRewrite("((\\.)?\\/favicon\\.ico)", $"{(urlBase == "/" ? string.Empty : urlBase)}/favicon.ico");
 
-            // inject urlBase and port into any html files we serve as a window-scoped javascript variable
-            app.UseHTMLInjection($"<script>window.urlBase=\"{urlBase}\";window.port={OptionsAtStartup.Web.Port}</script>", excludedRoutes: new[] { "/api", "/swagger" });
+            // inject urlBase, port, and relay agent mode into any html files we serve as window-scoped javascript variables.
+            // agent mode is fixed at startup; knowing it up front lets the UI render routes before the first hub message
+            app.UseHTMLInjection(
+                $"<script>window.urlBase=\"{urlBase}\";window.port={OptionsAtStartup.Web.Port};window.relayAgent={(IsRelayAgent ? "true" : "false")}</script>",
+                excludedRoutes: new[] { "/api", "/swagger" });
 
             Log.Information("Using base url {UrlBase}", urlBase);
 
