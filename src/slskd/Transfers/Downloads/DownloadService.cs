@@ -130,15 +130,29 @@ namespace slskd.Transfers.Downloads
         List<Transfer> List(Expression<Func<Transfer, bool>> expression = null, bool includeRemoved = false);
 
         /// <summary>
-        ///     Returns the downloads matching the specified <paramref name="filter"/>, skipping <paramref name="offset"/> and
-        ///     taking at most <paramref name="limit"/>, along with the total number matching and counts by state.
+        ///     Returns the downloads matching the specified <paramref name="filter"/> and <paramref name="query"/>, skipping
+        ///     <paramref name="offset"/> and taking at most <paramref name="limit"/>, along with the total number matching
+        ///     and counts by state.
         /// </summary>
         /// <remarks>Removed downloads are excluded. Active downloads come first (oldest first), then completed (newest first).</remarks>
         /// <param name="filter">The filter to apply.</param>
+        /// <param name="query">An optional query narrowing downloads to a user and/or search term.</param>
         /// <param name="offset">The number of matching downloads to skip.</param>
         /// <param name="limit">The maximum number of downloads to return.</param>
         /// <returns>The page of downloads.</returns>
-        TransferPage Page(TransferFilter filter, int offset, int limit);
+        TransferPage Page(TransferFilter filter, TransferQuery query, int offset, int limit);
+
+        /// <summary>
+        ///     Groups the downloads matching the specified <paramref name="filter"/> and <paramref name="query"/> and
+        ///     returns the largest groups.
+        /// </summary>
+        /// <param name="filter">The filter to apply.</param>
+        /// <param name="query">An optional query narrowing downloads to a user and/or search term.</param>
+        /// <param name="grouping">How to group downloads.</param>
+        /// <param name="sort">How to order groups.</param>
+        /// <param name="limit">The maximum number of groups to return.</param>
+        /// <returns>The summary.</returns>
+        TransferSummaryResult Summarize(TransferFilter filter, TransferQuery query, TransferSummaryGrouping grouping, TransferSummarySort sort, int limit);
 
         /// <summary>
         ///     Returns the non-removed, active downloads matching the specified <paramref name="filter"/>.
@@ -943,24 +957,50 @@ namespace slskd.Transfers.Downloads
         }
 
         /// <summary>
-        ///     Returns the downloads matching the specified <paramref name="filter"/>, skipping <paramref name="offset"/> and
-        ///     taking at most <paramref name="limit"/>, along with the total number matching and counts by state.
+        ///     Returns the downloads matching the specified <paramref name="filter"/> and <paramref name="query"/>, skipping
+        ///     <paramref name="offset"/> and taking at most <paramref name="limit"/>, along with the total number matching
+        ///     and counts by state.
         /// </summary>
         /// <remarks>Removed downloads are excluded. Active downloads come first (oldest first), then completed (newest first).</remarks>
         /// <param name="filter">The filter to apply.</param>
+        /// <param name="query">An optional query narrowing downloads to a user and/or search term.</param>
         /// <param name="offset">The number of matching downloads to skip.</param>
         /// <param name="limit">The maximum number of downloads to return.</param>
         /// <returns>The page of downloads.</returns>
-        public TransferPage Page(TransferFilter filter, int offset, int limit)
+        public TransferPage Page(TransferFilter filter, TransferQuery query, int offset, int limit)
         {
             try
             {
                 using var context = ContextFactory.CreateDbContext();
-                return TransferPaging.Page(context, TransferDirection.Download, filter, offset, limit);
+                return TransferPaging.Page(context, TransferDirection.Download, filter, query, offset, limit);
             }
             catch (Exception ex)
             {
                 Log.Error(ex, "Failed to page downloads: {Message}", ex.Message);
+                throw;
+            }
+        }
+
+        /// <summary>
+        ///     Groups the downloads matching the specified <paramref name="filter"/> and <paramref name="query"/> and
+        ///     returns the largest groups.
+        /// </summary>
+        /// <param name="filter">The filter to apply.</param>
+        /// <param name="query">An optional query narrowing downloads to a user and/or search term.</param>
+        /// <param name="grouping">How to group downloads.</param>
+        /// <param name="sort">How to order groups.</param>
+        /// <param name="limit">The maximum number of groups to return.</param>
+        /// <returns>The summary.</returns>
+        public TransferSummaryResult Summarize(TransferFilter filter, TransferQuery query, TransferSummaryGrouping grouping, TransferSummarySort sort, int limit)
+        {
+            try
+            {
+                using var context = ContextFactory.CreateDbContext();
+                return TransferPaging.Summarize(context, TransferDirection.Download, filter, query, grouping, sort, limit);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Failed to summarize downloads: {Message}", ex.Message);
                 throw;
             }
         }

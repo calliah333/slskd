@@ -308,6 +308,137 @@ public class TransferPagingTests
         Assert.All(states, s => Assert.Contains(s, TransferStateCategories.Completed));
     }
 
+    [Fact]
+    public void Page_Narrows_Rows_And_Counts_To_Exact_Username()
+    {
+        using var db = new Db();
+        var bob = db.Insert(Succeeded, endedAt: T0, username: "bob");
+        var bobQueued = db.Insert(QueuedLocally, username: "bob");
+        db.Insert(Succeeded, endedAt: T0, username: "Bob");
+        db.Insert(Succeeded, endedAt: T0, username: "bobby");
+        db.Insert(Succeeded, endedAt: T0, username: "bob", direction: TransferDirection.Download);
+
+        var page = db.Page(TransferFilter.All, 0, 100, new TransferQuery { Username = "bob" });
+
+        Assert.Equal(2, page.Total);
+        Assert.Equal(new[] { bobQueued, bob }, page.Transfers.Select(t => t.Id));
+        Assert.Equal(1, page.Counts[Succeeded]);
+        Assert.Equal(1, page.Counts[QueuedLocally]);
+    }
+
+    [Theory]
+    [InlineData("AlBuM", 2)] // case-insensitive, matches the directory of both files
+    [InlineData("carol", 1)] // matches the username
+    [InlineData("100%", 1)] // '%' is literal, not a wildcard
+    [InlineData("a_b", 1)] // '_' is literal, not a wildcard
+    [InlineData("x!y", 1)] // the escape character is literal too
+    [InlineData("\\Album\\", 2)] // path separators match literally
+    [InlineData("nothing", 0)]
+    public void Page_Search_Matches_Filename_Or_Username_Literally_Ignoring_Case(string search, int expected)
+    {
+        using var db = new Db();
+        db.Insert(Succeeded, endedAt: T0, username: "alice", filename: "@@m\\Album\\100% a_b.flac");
+        db.Insert(Succeeded, endedAt: T0, username: "alice", filename: "@@m\\Album\\x!y.flac");
+        db.Insert(Succeeded, endedAt: T0, username: "carol", filename: "@@m\\Other\\100 axb.flac");
+
+        var page = db.Page(TransferFilter.All, 0, 100, new TransferQuery { Search = search });
+
+        Assert.Equal(expected, page.Total);
+        Assert.Equal(expected, page.Transfers.Count);
+        Assert.Equal(expected, page.Counts.Values.Sum());
+    }
+
+    [Fact]
+    public void Summarize_By_Directory_Counts_Distinct_Users_And_Sorts_By_Them()
+    {
+        using var db = new Db();
+
+        // popular album: three users, one of them twice; a removed row and a download are ignored
+        db.Insert(Succeeded, endedAt: T0, username: "a", filename: "@@m\\Pop\\1.flac", bytesTransferred: 10);
+        db.Insert(Succeeded, endedAt: T0.AddHours(1), username: "a", filename: "@@m\\Pop\\2.flac", bytesTransferred: 10);
+        db.Insert(Errored, endedAt: T0, username: "b", filename: "@@m\\Pop\\1.flac", bytesTransferred: 5);
+        db.Insert(QueuedLocally, requestedAt: T0.AddHours(2), username: "c", filename: "@@m\\Pop\\3.flac");
+        db.Insert(Succeeded, endedAt: T0, username: "d", filename: "@@m\\Pop\\1.flac", removed: true);
+        db.Insert(Succeeded, endedAt: T0, username: "e", filename: "@@m\\Pop\\1.flac", direction: TransferDirection.Download);
+
+        // niche album: one user, many files
+        db.Insert(Succeeded, endedAt: T0, username: "z", filename: "@@m\\Niche\\1.flac", bytesTransferred: 100);
+        db.Insert(Succeeded, endedAt: T0, username: "z", filename: "@@m\\Niche\\2.flac", bytesTransferred: 100);
+        db.Insert(Succeeded, endedAt: T0, username: "z", filename: "@@m\\Niche\\3.flac", bytesTransferred: 100);
+        db.Insert(Succeeded, endedAt: T0, username: "z", filename: "@@m\\Niche\\4.flac", bytesTransferred: 100);
+        db.Insert(Succeeded, endedAt: T0, username: "z", filename: "@@m\\Niche\\5.flac", bytesTransferred: 100);
+
+        var summary = db.Summarize(TransferSummaryGrouping.Directory);
+
+        Assert.Equal(2, summary.Groups);
+        Assert.Equal(9, summary.Transfers);
+        Assert.Equal(new[] { "@@m\\Pop", "@@m\\Niche" }, summary.Rows.Select(r => r.Key));
+
+        var pop = summary.Rows[0];
+        Assert.Equal(3, pop.Users);
+        Assert.Equal(4, pop.Transfers);
+        Assert.Equal(2, pop.Succeeded);
+        Assert.Equal(25, pop.Bytes);
+        Assert.Equal(T0.AddHours(2), pop.LastActivityAt);
+        Assert.Equal(DateTimeKind.Utc, pop.LastActivityAt.Kind);
+
+        Assert.Equal(new[] { "@@m\\Niche", "@@m\\Pop" }, db.Summarize(TransferSummaryGrouping.Directory, TransferSummarySort.Transfers).Rows.Select(r => r.Key));
+        Assert.Equal(new[] { "@@m\\Niche", "@@m\\Pop" }, db.Summarize(TransferSummaryGrouping.Directory, TransferSummarySort.Bytes).Rows.Select(r => r.Key));
+        Assert.Equal(new[] { "@@m\\Pop", "@@m\\Niche" }, db.Summarize(TransferSummaryGrouping.Directory, TransferSummarySort.Recent).Rows.Select(r => r.Key));
+    }
+
+    [Fact]
+    public void Summarize_Applies_Filter_Query_And_Limit()
+    {
+        using var db = new Db();
+        db.Insert(Succeeded, endedAt: T0, username: "a", filename: "@@m\\Pop\\1.flac");
+        db.Insert(Succeeded, endedAt: T0, username: "b", filename: "@@m\\Pop\\1.flac");
+        db.Insert(Errored, endedAt: T0, username: "c", filename: "@@m\\Pop\\1.flac");
+        db.Insert(QueuedLocally, username: "a", filename: "@@m\\Pop\\2.flac");
+        db.Insert(Succeeded, endedAt: T0, username: "a", filename: "@@m\\Rock\\1.mp3");
+
+        var succeeded = db.Summarize(TransferSummaryGrouping.File, filter: TransferFilter.Succeeded);
+        Assert.Equal(new[] { ("@@m\\Pop\\1.flac", 2), ("@@m\\Rock\\1.mp3", 1) }, succeeded.Rows.Select(r => (r.Key, r.Users)));
+
+        var active = db.Summarize(TransferSummaryGrouping.File, filter: TransferFilter.Active);
+        Assert.Equal(new[] { "@@m\\Pop\\2.flac" }, active.Rows.Select(r => r.Key));
+
+        var userA = db.Summarize(TransferSummaryGrouping.Directory, query: new TransferQuery { Username = "a" });
+        Assert.Equal(new[] { ("@@m\\Pop", 2), ("@@m\\Rock", 1) }, userA.Rows.Select(r => (r.Key, r.Transfers)));
+
+        var flac = db.Summarize(TransferSummaryGrouping.User, TransferSummarySort.Transfers, query: new TransferQuery { Search = ".FLAC" }, limit: 1);
+        Assert.Equal(3, flac.Groups);
+        Assert.Equal(4, flac.Transfers);
+        Assert.Equal(("a", 2), (flac.Rows.Single().Key, flac.Rows.Single().Transfers));
+    }
+
+    [Fact]
+    public void Summarize_Returns_Empty_When_Nothing_Matches()
+    {
+        using var db = new Db();
+
+        var summary = db.Summarize(TransferSummaryGrouping.User);
+
+        Assert.Equal(0, summary.Groups);
+        Assert.Empty(summary.Rows);
+    }
+
+    [Theory]
+    [InlineData(null, TransferSummaryGrouping.Directory, true)]
+    [InlineData("USER", TransferSummaryGrouping.User, true)]
+    [InlineData(" file ", TransferSummaryGrouping.File, true)]
+    [InlineData("0", TransferSummaryGrouping.Directory, false)]
+    [InlineData("user,file", TransferSummaryGrouping.Directory, false)]
+    public void TryParseName_Accepts_Only_Member_Names(string value, TransferSummaryGrouping expected, bool parsed)
+    {
+        Assert.Equal(parsed, TransferPaging.TryParseName(value, TransferSummaryGrouping.Directory, out var result));
+
+        if (parsed)
+        {
+            Assert.Equal(expected, result);
+        }
+    }
+
     private sealed class Db : IDisposable
     {
         private readonly SqliteConnection _anchor;
@@ -332,10 +463,21 @@ public class TransferPagingTests
 
         public TransfersDbContext CreateContext() => new(_options);
 
-        public TransferPage Page(TransferFilter filter, int offset, int limit)
+        public TransferPage Page(TransferFilter filter, int offset, int limit, TransferQuery query = null)
         {
             using var context = CreateContext();
-            return TransferPaging.Page(context, TransferDirection.Upload, filter, offset, limit);
+            return TransferPaging.Page(context, TransferDirection.Upload, filter, query, offset, limit);
+        }
+
+        public TransferSummaryResult Summarize(
+            TransferSummaryGrouping grouping,
+            TransferSummarySort sort = TransferSummarySort.Users,
+            TransferFilter filter = TransferFilter.All,
+            TransferQuery query = null,
+            int limit = 100)
+        {
+            using var context = CreateContext();
+            return TransferPaging.Summarize(context, TransferDirection.Upload, filter, query, grouping, sort, limit);
         }
 
         public Guid Insert(
@@ -343,7 +485,10 @@ public class TransferPagingTests
             DateTime? requestedAt = null,
             DateTime? endedAt = null,
             bool removed = false,
-            TransferDirection direction = TransferDirection.Upload)
+            TransferDirection direction = TransferDirection.Upload,
+            string username = "user",
+            string filename = null,
+            long bytesTransferred = 0)
         {
             var id = Guid.NewGuid();
 
@@ -351,10 +496,11 @@ public class TransferPagingTests
             context.Transfers.Add(new Transfer
             {
                 Id = id,
-                Username = "user",
+                Username = username,
                 Direction = direction,
-                Filename = $"@@share\\dir\\{id}.flac",
+                Filename = filename ?? $"@@share\\dir\\{id}.flac",
                 Size = 1,
+                BytesTransferred = bytesTransferred,
                 State = state,
                 RequestedAt = requestedAt ?? T0,
                 EndedAt = endedAt,

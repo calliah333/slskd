@@ -35,33 +35,33 @@ public class TransfersControllerTests
     {
         var (controller, mocks) = GetFixture();
 
-        var result = controller.GetUploadsPage(filter, offset, limit);
+        var result = controller.GetUploadsPage(filter, offset: offset, limit: limit);
 
         Assert.IsType<BadRequestObjectResult>(result);
-        mocks.Uploads.Verify(m => m.Page(It.IsAny<TransferFilter>(), It.IsAny<int>(), It.IsAny<int>()), Times.Never);
+        mocks.Uploads.Verify(m => m.Page(It.IsAny<TransferFilter>(), It.IsAny<TransferQuery>(), It.IsAny<int>(), It.IsAny<int>()), Times.Never);
     }
 
     [Fact]
     public void GetUploadsPage_Clamps_Limit_And_Passes_Parsed_Filter()
     {
         var (controller, mocks) = GetFixture();
-        mocks.Uploads.Setup(m => m.Page(It.IsAny<TransferFilter>(), It.IsAny<int>(), It.IsAny<int>()))
+        mocks.Uploads.Setup(m => m.Page(It.IsAny<TransferFilter>(), It.IsAny<TransferQuery>(), It.IsAny<int>(), It.IsAny<int>()))
             .Returns(new TransferPage { Total = 0, Counts = new Dictionary<TransferStates, int>(), Transfers = [] });
 
-        var result = controller.GetUploadsPage("SUCCEEDED", 10, 100_000);
+        var result = controller.GetUploadsPage("SUCCEEDED", offset: 10, limit: 100_000);
 
         var response = Assert.IsType<TransferPageResponse>(Assert.IsType<OkObjectResult>(result).Value);
         Assert.Equal("succeeded", response.Filter);
         Assert.Equal(10, response.Offset);
         Assert.Equal(TransferPaging.MaxLimit, response.Limit);
-        mocks.Uploads.Verify(m => m.Page(TransferFilter.Succeeded, 10, TransferPaging.MaxLimit), Times.Once);
+        mocks.Uploads.Verify(m => m.Page(TransferFilter.Succeeded, new TransferQuery(), 10, TransferPaging.MaxLimit), Times.Once);
     }
 
     [Fact]
     public void GetDownloadsPage_Defaults_To_All_And_Queries_Downloads()
     {
         var (controller, mocks) = GetFixture();
-        mocks.Downloads.Setup(m => m.Page(It.IsAny<TransferFilter>(), It.IsAny<int>(), It.IsAny<int>()))
+        mocks.Downloads.Setup(m => m.Page(It.IsAny<TransferFilter>(), It.IsAny<TransferQuery>(), It.IsAny<int>(), It.IsAny<int>()))
             .Returns(new TransferPage { Total = 0, Counts = new Dictionary<TransferStates, int>(), Transfers = [] });
 
         var result = controller.GetDownloadsPage();
@@ -69,8 +69,61 @@ public class TransfersControllerTests
         var response = Assert.IsType<TransferPageResponse>(Assert.IsType<OkObjectResult>(result).Value);
         Assert.Equal("all", response.Filter);
         Assert.Equal(TransferPaging.DefaultLimit, response.Limit);
-        mocks.Downloads.Verify(m => m.Page(TransferFilter.All, 0, TransferPaging.DefaultLimit), Times.Once);
-        mocks.Uploads.Verify(m => m.Page(It.IsAny<TransferFilter>(), It.IsAny<int>(), It.IsAny<int>()), Times.Never);
+        mocks.Downloads.Verify(m => m.Page(TransferFilter.All, new TransferQuery(), 0, TransferPaging.DefaultLimit), Times.Once);
+        mocks.Uploads.Verify(m => m.Page(It.IsAny<TransferFilter>(), It.IsAny<TransferQuery>(), It.IsAny<int>(), It.IsAny<int>()), Times.Never);
+    }
+
+    [Fact]
+    public void GetUploadsPage_Passes_Trimmed_Username_And_Search_And_Echoes_Them()
+    {
+        var (controller, mocks) = GetFixture();
+        mocks.Uploads.Setup(m => m.Page(It.IsAny<TransferFilter>(), It.IsAny<TransferQuery>(), It.IsAny<int>(), It.IsAny<int>()))
+            .Returns(new TransferPage { Total = 0, Counts = new Dictionary<TransferStates, int>(), Transfers = [] });
+
+        var result = controller.GetUploadsPage(username: " bob ", search: "  ");
+
+        var response = Assert.IsType<TransferPageResponse>(Assert.IsType<OkObjectResult>(result).Value);
+        Assert.Equal("bob", response.Username);
+        Assert.Null(response.Search);
+        mocks.Uploads.Verify(m => m.Page(TransferFilter.All, new TransferQuery { Username = "bob" }, 0, TransferPaging.DefaultLimit), Times.Once);
+    }
+
+    [Theory]
+    [InlineData("bogus", null, null, 10)]
+    [InlineData(null, "bogus", null, 10)]
+    [InlineData(null, null, "bogus", 10)]
+    [InlineData("1", null, null, 10)]
+    [InlineData(null, null, null, 0)]
+    public void GetUploadsSummary_Returns_BadRequest_On_Invalid_Input(string by, string sort, string filter, int limit)
+    {
+        var (controller, mocks) = GetFixture();
+
+        var result = controller.GetUploadsSummary(by, sort, filter, limit: limit);
+
+        Assert.IsType<BadRequestObjectResult>(result);
+        mocks.Uploads.Verify(
+            m => m.Summarize(It.IsAny<TransferFilter>(), It.IsAny<TransferQuery>(), It.IsAny<TransferSummaryGrouping>(), It.IsAny<TransferSummarySort>(), It.IsAny<int>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public void GetDownloadsSummary_Defaults_To_Directories_By_Users_And_Clamps_Limit()
+    {
+        var (controller, mocks) = GetFixture();
+        mocks.Downloads.Setup(m => m.Summarize(It.IsAny<TransferFilter>(), It.IsAny<TransferQuery>(), It.IsAny<TransferSummaryGrouping>(), It.IsAny<TransferSummarySort>(), It.IsAny<int>()))
+            .Returns(new TransferSummaryResult { Groups = 3, Transfers = 7, Rows = [] });
+
+        var result = controller.GetDownloadsSummary(search: "flac", limit: 100_000);
+
+        var response = Assert.IsType<TransferSummaryResponse>(Assert.IsType<OkObjectResult>(result).Value);
+        Assert.Equal("directory", response.By);
+        Assert.Equal("users", response.Sort);
+        Assert.Equal(3, response.Groups);
+        Assert.Equal(7, response.Transfers);
+        Assert.Equal(TransferPaging.MaxSummaryLimit, response.Limit);
+        mocks.Downloads.Verify(
+            m => m.Summarize(TransferFilter.All, new TransferQuery { Search = "flac" }, TransferSummaryGrouping.Directory, TransferSummarySort.Users, TransferPaging.MaxSummaryLimit),
+            Times.Once);
     }
 
     [Fact]
@@ -86,7 +139,7 @@ public class TransfersControllerTests
             NewTransfer("bob", "@@a\\one\\3.flac"),
         };
 
-        mocks.Uploads.Setup(m => m.Page(It.IsAny<TransferFilter>(), It.IsAny<int>(), It.IsAny<int>()))
+        mocks.Uploads.Setup(m => m.Page(It.IsAny<TransferFilter>(), It.IsAny<TransferQuery>(), It.IsAny<int>(), It.IsAny<int>()))
             .Returns(new TransferPage { Total = 42, Counts = new Dictionary<TransferStates, int>(), Transfers = transfers });
 
         var result = controller.GetUploadsPage();
@@ -120,7 +173,7 @@ public class TransfersControllerTests
             [Cancelled] = 3,
         };
 
-        mocks.Uploads.Setup(m => m.Page(It.IsAny<TransferFilter>(), It.IsAny<int>(), It.IsAny<int>()))
+        mocks.Uploads.Setup(m => m.Page(It.IsAny<TransferFilter>(), It.IsAny<TransferQuery>(), It.IsAny<int>(), It.IsAny<int>()))
             .Returns(new TransferPage { Total = 0, Counts = counts, Transfers = [] });
 
         var result = controller.GetUploadsPage();

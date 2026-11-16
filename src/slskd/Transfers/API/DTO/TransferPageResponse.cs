@@ -45,6 +45,16 @@ namespace slskd.Transfers.API
         public string Filter { get; init; }
 
         /// <summary>
+        ///     Gets the applied username, if any.
+        /// </summary>
+        public string Username { get; init; }
+
+        /// <summary>
+        ///     Gets the applied search text, if any.
+        /// </summary>
+        public string Search { get; init; }
+
+        /// <summary>
         ///     Gets the number of matching transfers skipped.
         /// </summary>
         public int Offset { get; init; }

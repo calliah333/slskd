@@ -8,25 +8,68 @@ export const MAX_PAGE_SIZE = 5_000;
  * @param {object} params
  * @param {'download'|'upload'} params.direction - The transfer direction.
  * @param {'all'|'active'|'completed'|'succeeded'|'errored'|'cancelled'} [params.filter] - The state filter.
+ * @param {string} [params.username] - Only transfers with exactly this user.
+ * @param {string} [params.search] - Only transfers whose filename or username contains this text, ignoring case.
  * @param {number} [params.offset] - The number of matching rows to skip.
  * @param {number} [params.limit] - The page size (1..5000).
- * @returns {Promise<{ filter: string, offset: number, limit: number, total: number, counts: object, users: object[] }>}
+ * @returns {Promise<{ filter: string, username?: string, search?: string, offset: number, limit: number, total: number, counts: object, users: object[] }>}
  */
 export const getPage = async ({
   direction,
   filter = 'all',
+  username,
+  search,
   offset = 0,
   limit = PAGE_SIZE,
 }) => {
   const parameters = new URLSearchParams();
 
   parameters.append('filter', filter);
+  if (username) parameters.append('username', username);
+  if (search) parameters.append('search', search);
   parameters.append('offset', offset);
   parameters.append('limit', limit);
 
   return (
     await api.get(
       `/transfers/${encodeURIComponent(direction)}s/page?${parameters}`,
+    )
+  ).data;
+};
+
+/**
+ * Groups transfers by user, directory, or file and fetches the largest groups.
+ * @param {object} params
+ * @param {'download'|'upload'} params.direction - The transfer direction.
+ * @param {'user'|'directory'|'file'} [params.by] - How to group.
+ * @param {'users'|'transfers'|'bytes'|'recent'} [params.sort] - How to order groups (descending).
+ * @param {string} [params.filter] - The state filter, as for getPage.
+ * @param {string} [params.username] - Only transfers with exactly this user.
+ * @param {string} [params.search] - Only transfers whose filename or username contains this text.
+ * @param {number} [params.limit] - The maximum number of groups (1..1000).
+ * @returns {Promise<{ groups: number, transfers: number, rows: { key: string, transfers: number, users: number, succeeded: number, bytes: number, lastActivityAt: string }[] }>}
+ */
+export const getSummary = async ({
+  direction,
+  by = 'directory',
+  sort = 'users',
+  filter = 'all',
+  username,
+  search,
+  limit = 100,
+}) => {
+  const parameters = new URLSearchParams();
+
+  parameters.append('by', by);
+  parameters.append('sort', sort);
+  parameters.append('filter', filter);
+  if (username) parameters.append('username', username);
+  if (search) parameters.append('search', search);
+  parameters.append('limit', limit);
+
+  return (
+    await api.get(
+      `/transfers/${encodeURIComponent(direction)}s/summary?${parameters}`,
     )
   ).data;
 };

@@ -2,9 +2,12 @@ import './Transfers.css';
 import { poll } from '../../lib/polling';
 import * as transfersLibrary from '../../lib/transfers';
 import { LoaderSegment, PlaceholderSegment } from '../Shared';
+import TransferBreakdown from './TransferBreakdown';
 import TransferGroup from './TransferGroup';
 import TransfersHeader from './TransfersHeader';
+import TransfersSearch from './TransfersSearch';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useHistory, useLocation } from 'react-router-dom';
 import { toast } from 'react-toastify';
 import { Label, Loader, Menu, Pagination } from 'semantic-ui-react';
 
@@ -23,13 +26,32 @@ const toastError = (error) => {
   toast.error(error?.response?.data ?? error?.message ?? error);
 };
 
+// typing in the search box updates the URL (and so the query) after this pause
+const SEARCH_DEBOUNCE_MS = 350;
+
 const Transfers = ({ direction, server }) => {
+  const history = useHistory();
+  const location = useLocation();
+
+  // the user and search narrowing live in the URL, so a filtered view can be bookmarked or shared,
+  // and the browser's back button undoes a drill-down from the breakdown
+  const urlParameters = useMemo(
+    () => new URLSearchParams(location.search),
+    [location.search],
+  );
+  const username = urlParameters.get('user') ?? '';
+  const search = urlParameters.get('q') ?? '';
+  const showBreakdown = urlParameters.get('view') === 'breakdown';
+
   const [connecting, setConnecting] = useState(true);
   const [page, setPage] = useState(undefined);
   const [filter, setFilter] = useState('all');
   const [offset, setOffset] = useState(0);
   const [refreshToken, setRefreshToken] = useState(0);
   const [previousDirection, setPreviousDirection] = useState(direction);
+  const [searchText, setSearchText] = useState(search);
+  const [previousSearch, setPreviousSearch] = useState(search);
+  const [previousUsername, setPreviousUsername] = useState(username);
 
   const [retrying, setRetrying] = useState(false);
   const [cancelling, setCancelling] = useState(false);
@@ -43,7 +65,72 @@ const Transfers = ({ direction, server }) => {
     setOffset(0);
   }
 
-  const key = `${direction}:${filter}:${offset}`;
+  if (search !== previousSearch) {
+    // the URL changed underneath the box (a breakdown row, back button, route change); follow it
+    setPreviousSearch(search);
+    setSearchText(search);
+    setOffset(0);
+  }
+
+  if (username !== previousUsername) {
+    setPreviousUsername(username);
+    setOffset(0);
+  }
+
+  const updateUrl = useCallback(
+    (changes, { push = false } = {}) => {
+      const next = new URLSearchParams(location.search);
+
+      for (const [name, value] of Object.entries(changes)) {
+        if (value) next.set(name, value);
+        else next.delete(name);
+      }
+
+      const target = { pathname: location.pathname, search: next.toString() };
+
+      if (push) history.push(target);
+      else history.replace(target);
+    },
+    [history, location.pathname, location.search],
+  );
+
+  useEffect(() => {
+    if (searchText.trim() === search) {
+      return undefined;
+    }
+
+    const timer = setTimeout(
+      () => updateUrl({ q: searchText.trim() }),
+      SEARCH_DEBOUNCE_MS,
+    );
+
+    return () => clearTimeout(timer);
+  }, [search, searchText, updateUrl]);
+
+  const filterByUser = useCallback(
+    (value) => {
+      setOffset(0);
+      updateUrl({ user: value }, { push: true });
+    },
+    [updateUrl],
+  );
+
+  const selectBreakdownRow = useCallback(
+    ({ by, key: value }) => {
+      setOffset(0);
+
+      // directories match their files (and any subdirectories) by including the trailing separator
+      updateUrl(
+        by === 'user'
+          ? { user: value, view: undefined }
+          : { q: by === 'directory' ? `${value}\\` : value, view: undefined },
+        { push: true },
+      );
+    },
+    [updateUrl],
+  );
+
+  const key = `${direction}:${filter}:${username}:${search}:${offset}`;
 
   useEffect(() => {
     let current = true;
@@ -58,6 +145,8 @@ const Transfers = ({ direction, server }) => {
           filter,
           limit: PAGE_SIZE,
           offset,
+          search,
+          username,
         });
 
         if (current) {
@@ -78,7 +167,7 @@ const Transfers = ({ direction, server }) => {
       current = false;
       stop();
     };
-  }, [direction, filter, key, offset, refreshToken]);
+  }, [direction, filter, key, offset, refreshToken, search, username]);
 
   const refresh = useCallback(() => setRefreshToken((token) => token + 1), []);
 
@@ -132,20 +221,20 @@ const Transfers = ({ direction, server }) => {
           filter: retryFilter,
         });
 
-        for (const { filename, size, username } of files) {
-          if (!filesByUser.has(username)) filesByUser.set(username, new Map());
-          filesByUser.get(username).set(filename, { filename, size });
+        for (const { filename, size, username: owner } of files) {
+          if (!filesByUser.has(owner)) filesByUser.set(owner, new Map());
+          filesByUser.get(owner).set(filename, { filename, size });
         }
       }
 
       // one request per user, sequentially: the enqueue endpoint rejects concurrent requests (429)
       let failed = 0;
 
-      for (const [username, files] of filesByUser) {
+      for (const [owner, files] of filesByUser) {
         try {
           await transfersLibrary.download({
             files: [...files.values()],
-            username,
+            username: owner,
           });
         } catch (error) {
           failed++;
@@ -212,20 +301,48 @@ const Transfers = ({ direction, server }) => {
       </div>
     ) : null;
 
+  const narrowed = Boolean(username || search);
+  const noun = `${filter === 'all' ? '' : `${filter} `}${direction}s`;
+
   return (
     <>
       <TransfersHeader
         cancelling={cancelling}
         counts={filterCounts}
         direction={direction}
+        narrowed={narrowed}
         onCancelAll={cancelAll}
         onRemoveAll={removeAll}
         onRetryAll={retryAll}
         removing={removing}
         retrying={retrying}
         server={server}
-      />
-      {filterCounts.all > 0 && (
+      >
+        <TransfersSearch
+          direction={direction}
+          onClearUser={() => filterByUser(undefined)}
+          onSearchTextChange={setSearchText}
+          onToggleBreakdown={() =>
+            updateUrl(
+              { view: showBreakdown ? undefined : 'breakdown' },
+              { push: true },
+            )
+          }
+          searchText={searchText}
+          showBreakdown={showBreakdown}
+          username={username}
+        />
+      </TransfersHeader>
+      {showBreakdown && (
+        <TransferBreakdown
+          direction={direction}
+          filter={filter}
+          onSelect={selectBreakdownRow}
+          search={search}
+          username={username}
+        />
+      )}
+      {(filterCounts.all > 0 || narrowed) && (
         <Menu
           className="transfers-filter-menu"
           pointing
@@ -263,7 +380,7 @@ const Transfers = ({ direction, server }) => {
       {pagination}
       {users.length === 0 ? (
         <PlaceholderSegment
-          caption={`No ${filter === 'all' ? '' : `${filter} `}${direction}s to display`}
+          caption={narrowed ? `No ${noun} match` : `No ${noun} to display`}
           icon={direction}
         />
       ) : (
@@ -271,6 +388,7 @@ const Transfers = ({ direction, server }) => {
           <TransferGroup
             direction={direction}
             key={user.username}
+            onFilterUser={username ? undefined : filterByUser}
             onRefresh={refresh}
             user={user}
           />

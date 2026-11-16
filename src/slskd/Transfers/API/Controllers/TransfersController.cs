@@ -559,6 +559,8 @@ namespace slskd.Transfers.API
         ///     Removed downloads are excluded.
         /// </remarks>
         /// <param name="filter">An optional filter; one of all (default), active, completed, succeeded, errored, or cancelled.</param>
+        /// <param name="username">An optional username; only downloads from exactly this user are returned.</param>
+        /// <param name="search">Optional text to find anywhere in the filename or username, ignoring case.</param>
         /// <param name="offset">The number of matching downloads to skip.</param>
         /// <param name="limit">The maximum number of downloads to return; values greater than 5000 are reduced to 5000.</param>
         /// <returns></returns>
@@ -568,14 +570,51 @@ namespace slskd.Transfers.API
         [Authorize(Policy = AuthPolicy.Any)]
         [ProducesResponseType(typeof(TransferPageResponse), 200)]
         [ProducesResponseType(typeof(string), 400)]
-        public IActionResult GetDownloadsPage([FromQuery] string filter = null, [FromQuery] int offset = 0, [FromQuery] int limit = TransferPaging.DefaultLimit)
+        public IActionResult GetDownloadsPage(
+            [FromQuery] string filter = null,
+            [FromQuery] string username = null,
+            [FromQuery] string search = null,
+            [FromQuery] int offset = 0,
+            [FromQuery] int limit = TransferPaging.DefaultLimit)
         {
             if (Program.IsRelayAgent)
             {
                 return Forbid();
             }
 
-            return Page(Transfers.Downloads.Page, filter, offset, limit);
+            return Page(Transfers.Downloads.Page, filter, TransferQuery.From(username, search), offset, limit);
+        }
+
+        /// <summary>
+        ///     Groups downloads by user, directory, or file and returns the largest groups.
+        /// </summary>
+        /// <param name="by">How to group; one of user, directory (default), or file.</param>
+        /// <param name="sort">How to order groups, descending; one of users (default), transfers, bytes, or recent.</param>
+        /// <param name="filter">An optional filter; one of all (default), active, completed, succeeded, errored, or cancelled.</param>
+        /// <param name="username">An optional username; only downloads from exactly this user are summarized.</param>
+        /// <param name="search">Optional text to find anywhere in the filename or username, ignoring case.</param>
+        /// <param name="limit">The maximum number of groups to return; values greater than 1000 are reduced to 1000.</param>
+        /// <returns></returns>
+        /// <response code="200">The request completed successfully.</response>
+        /// <response code="400">A parameter is not valid.</response>
+        [HttpGet("downloads/summary")]
+        [Authorize(Policy = AuthPolicy.Any)]
+        [ProducesResponseType(typeof(TransferSummaryResponse), 200)]
+        [ProducesResponseType(typeof(string), 400)]
+        public IActionResult GetDownloadsSummary(
+            [FromQuery] string by = null,
+            [FromQuery] string sort = null,
+            [FromQuery] string filter = null,
+            [FromQuery] string username = null,
+            [FromQuery] string search = null,
+            [FromQuery] int limit = TransferPaging.DefaultSummaryLimit)
+        {
+            if (Program.IsRelayAgent)
+            {
+                return Forbid();
+            }
+
+            return Summarize(Transfers.Downloads.Summarize, by, sort, filter, TransferQuery.From(username, search), limit);
         }
 
         /// <summary>
@@ -754,6 +793,8 @@ namespace slskd.Transfers.API
         ///     Removed uploads are excluded.
         /// </remarks>
         /// <param name="filter">An optional filter; one of all (default), active, completed, succeeded, errored, or cancelled.</param>
+        /// <param name="username">An optional username; only uploads to exactly this user are returned.</param>
+        /// <param name="search">Optional text to find anywhere in the filename or username, ignoring case.</param>
         /// <param name="offset">The number of matching uploads to skip.</param>
         /// <param name="limit">The maximum number of uploads to return; values greater than 5000 are reduced to 5000.</param>
         /// <returns></returns>
@@ -763,14 +804,54 @@ namespace slskd.Transfers.API
         [Authorize(Policy = AuthPolicy.Any)]
         [ProducesResponseType(typeof(TransferPageResponse), 200)]
         [ProducesResponseType(typeof(string), 400)]
-        public IActionResult GetUploadsPage([FromQuery] string filter = null, [FromQuery] int offset = 0, [FromQuery] int limit = TransferPaging.DefaultLimit)
+        public IActionResult GetUploadsPage(
+            [FromQuery] string filter = null,
+            [FromQuery] string username = null,
+            [FromQuery] string search = null,
+            [FromQuery] int offset = 0,
+            [FromQuery] int limit = TransferPaging.DefaultLimit)
         {
             if (Program.IsRelayAgent)
             {
                 return Forbid();
             }
 
-            return Page(Transfers.Uploads.Page, filter, offset, limit);
+            return Page(Transfers.Uploads.Page, filter, TransferQuery.From(username, search), offset, limit);
+        }
+
+        /// <summary>
+        ///     Groups uploads by user, directory, or file and returns the largest groups.
+        /// </summary>
+        /// <remarks>
+        ///     Grouping by directory and sorting by users answers "how many people are downloading this from me".
+        /// </remarks>
+        /// <param name="by">How to group; one of user, directory (default), or file.</param>
+        /// <param name="sort">How to order groups, descending; one of users (default), transfers, bytes, or recent.</param>
+        /// <param name="filter">An optional filter; one of all (default), active, completed, succeeded, errored, or cancelled.</param>
+        /// <param name="username">An optional username; only uploads to exactly this user are summarized.</param>
+        /// <param name="search">Optional text to find anywhere in the filename or username, ignoring case.</param>
+        /// <param name="limit">The maximum number of groups to return; values greater than 1000 are reduced to 1000.</param>
+        /// <returns></returns>
+        /// <response code="200">The request completed successfully.</response>
+        /// <response code="400">A parameter is not valid.</response>
+        [HttpGet("uploads/summary")]
+        [Authorize(Policy = AuthPolicy.Any)]
+        [ProducesResponseType(typeof(TransferSummaryResponse), 200)]
+        [ProducesResponseType(typeof(string), 400)]
+        public IActionResult GetUploadsSummary(
+            [FromQuery] string by = null,
+            [FromQuery] string sort = null,
+            [FromQuery] string filter = null,
+            [FromQuery] string username = null,
+            [FromQuery] string search = null,
+            [FromQuery] int limit = TransferPaging.DefaultSummaryLimit)
+        {
+            if (Program.IsRelayAgent)
+            {
+                return Forbid();
+            }
+
+            return Summarize(Transfers.Uploads.Summarize, by, sort, filter, TransferQuery.From(username, search), limit);
         }
 
         /// <summary>
@@ -871,7 +952,7 @@ namespace slskd.Transfers.API
             return true;
         }
 
-        private IActionResult Page(Func<TransferFilter, int, int, TransferPage> page, string filter, int offset, int limit)
+        private IActionResult Page(Func<TransferFilter, TransferQuery, int, int, TransferPage> page, string filter, TransferQuery query, int offset, int limit)
         {
             if (!ModelState.IsValid)
             {
@@ -895,11 +976,13 @@ namespace slskd.Transfers.API
 
             limit = Math.Min(limit, TransferPaging.MaxLimit);
 
-            var result = page(parsed, offset, limit);
+            var result = page(parsed, query, offset, limit);
 
             return Ok(new TransferPageResponse
             {
                 Filter = parsed.ToString().ToLowerInvariant(),
+                Username = query.Username,
+                Search = query.Search,
                 Offset = offset,
                 Limit = limit,
                 Total = result.Total,
@@ -909,6 +992,57 @@ namespace slskd.Transfers.API
                     .OrderBy(c => c.Key)
                     .ToDictionary(c => c.Key.ToString(), c => c.Value),
                 Users = GroupByUser(result.Transfers),
+            });
+        }
+
+        private IActionResult Summarize(
+            Func<TransferFilter, TransferQuery, TransferSummaryGrouping, TransferSummarySort, int, TransferSummaryResult> summarize,
+            string by,
+            string sort,
+            string filter,
+            TransferQuery query,
+            int limit)
+        {
+            if (!ModelState.IsValid)
+            {
+                return BadRequest(ModelState.GetReadableString());
+            }
+
+            if (!TransferPaging.TryParseName(by, TransferSummaryGrouping.Directory, out var grouping))
+            {
+                return BadRequest($"Invalid grouping '{by}'; expected one of user, directory, file");
+            }
+
+            if (!TransferPaging.TryParseName(sort, TransferSummarySort.Users, out var parsedSort))
+            {
+                return BadRequest($"Invalid sort '{sort}'; expected one of users, transfers, bytes, recent");
+            }
+
+            if (!TransferPaging.TryParseFilter(filter, out var parsedFilter))
+            {
+                return BadRequest($"Invalid filter '{filter}'; expected one of all, active, completed, succeeded, errored, cancelled");
+            }
+
+            if (limit < 1)
+            {
+                return BadRequest("Limit must be greater than zero");
+            }
+
+            limit = Math.Min(limit, TransferPaging.MaxSummaryLimit);
+
+            var result = summarize(parsedFilter, query, grouping, parsedSort, limit);
+
+            return Ok(new TransferSummaryResponse
+            {
+                By = grouping.ToString().ToLowerInvariant(),
+                Sort = parsedSort.ToString().ToLowerInvariant(),
+                Filter = parsedFilter.ToString().ToLowerInvariant(),
+                Username = query.Username,
+                Search = query.Search,
+                Limit = limit,
+                Groups = result.Groups,
+                Transfers = result.Transfers,
+                Rows = result.Rows,
             });
         }
     }

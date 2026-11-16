@@ -28,8 +28,10 @@ const textOf = (options, value) =>
 
 const TransfersHeader = ({
   cancelling = false,
+  children,
   counts,
   direction,
+  narrowed = false,
   onCancelAll,
   onRemoveAll,
   onRetryAll,
@@ -45,7 +47,9 @@ const TransfersHeader = ({
   const cancelText = textOf(cancelOptions, cancelOption);
   const removeText = textOf(removeOptions, removeOption);
 
-  const empty = counts.all === 0;
+  // bulk actions apply to every transfer, not just the user/search narrowing, and the counts we
+  // have are the narrowed ones; hide them rather than offer "Remove All" that removes more than shown
+  const empty = counts.all === 0 || narrowed;
   const working = retrying || cancelling || removing;
 
   return (
@@ -59,6 +63,7 @@ const TransfersHeader = ({
           size="big"
         />
       </div>
+      {children}
       <Div
         className="transfers-header-buttons"
         hidden={empty}

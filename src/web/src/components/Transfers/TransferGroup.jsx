@@ -28,7 +28,7 @@ const handleFetchPlaceInQueue = async (file) => {
   }
 };
 
-const TransferGroup = ({ direction, onRefresh, user }) => {
+const TransferGroup = ({ direction, onFilterUser, onRefresh, user }) => {
   const [isFolded, setIsFolded] = useState(false);
   // transfer ids; replaced (never mutated) on change so memoized rows see the difference
   const [selection, setSelection] = useState(EMPTY_SELECTION);
@@ -145,7 +145,27 @@ const TransferGroup = ({ direction, onRefresh, user }) => {
             name={isFolded ? 'chevron right' : 'chevron down'}
             onClick={() => setIsFolded((previous) => !previous)}
           />
-          {user.username}
+          {onFilterUser ? (
+            <span
+              className="transfer-card-username"
+              onClick={() => onFilterUser(user.username)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') onFilterUser(user.username);
+              }}
+              role="button"
+              tabIndex={0}
+              title={`Show only ${direction}s ${direction === 'upload' ? 'to' : 'from'} ${user.username}`}
+            >
+              {user.username}
+              <Icon
+                className="transfer-card-username-filter"
+                name="filter"
+                size="small"
+              />
+            </span>
+          ) : (
+            user.username
+          )}
         </Card.Header>
         {user.directories &&
           !isFolded &&
